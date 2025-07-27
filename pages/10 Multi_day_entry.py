@@ -26,7 +26,6 @@ st.title("📈 Strategy-1 Backtest: Breakout with Volume & SL/TP")
 # -------------------------
 with st.sidebar:
     st.header("🔎 Filters")
-    symbol = st.text_input("Symbol", value="NIFTY")
     start_date = st.date_input("Start Date")
     end_date = st.date_input("End Date")
     volume_window = st.slider("Volume SMA Period", 5, 50, 20)
@@ -45,10 +44,12 @@ if st.button("Run Backtest"):
         levels_df = pd.read_sql(level_query, conn)
         futures_df = pd.read_sql(futures_query, conn)
 
+    # Preprocess dates
     levels_df["trade_date"] = pd.to_datetime(levels_df["trade_date"])
     futures_df["trade_date"] = pd.to_datetime(futures_df["trade_date"])
     futures_df["timestamp"] = pd.to_datetime(futures_df["timestamp"])
 
+    # Match level dates to next valid futures day
     trade_days = sorted(futures_df["trade_date"].drop_duplicates())
     level_to_apply_map = {
         trade_days[i]: trade_days[i + 1]
@@ -56,34 +57,39 @@ if st.button("Run Backtest"):
     }
     levels_df["apply_date"] = levels_df["trade_date"].map(level_to_apply_map)
 
+    # Filter by date
     levels_filtered = levels_df[
-        (levels_df["symbol"] == symbol)
-        & (levels_df["apply_date"] >= pd.to_datetime(start_date))
-        & (levels_df["apply_date"] <= pd.to_datetime(end_date))
+        (levels_df["apply_date"] >= pd.to_datetime(start_date)) &
+        (levels_df["apply_date"] <= pd.to_datetime(end_date))
     ]
 
     futures_filtered = futures_df[
-        (futures_df["symbol"] == symbol)
-        & (futures_df["trade_date"] >= pd.to_datetime(start_date))
-        & (futures_df["trade_date"] <= pd.to_datetime(end_date))
+        (futures_df["trade_date"] >= pd.to_datetime(start_date)) &
+        (futures_df["trade_date"] <= pd.to_datetime(end_date))
     ]
 
-    joined_df = futures_filtered.merge(levels_filtered, left_on="trade_date", right_on="apply_date", how="left")
-    joined_df = joined_df.sort_values("timestamp").copy()
+    # Join levels with futures
+    joined_df = futures_filtered.merge(
+        levels_filtered,
+        left_on="trade_date",
+        right_on="apply_date",
+        how="left"
+    ).sort_values("timestamp")
 
-    # Compute rolling volume SMA
+    # Rolling volume SMA
     joined_df["volume_sma"] = joined_df.groupby("trade_date")["volume"].transform(lambda x: x.rolling(volume_window).mean())
 
-    # Backtest Logic
+    # Backtest Loop
     trades = []
-    grouped = joined_df.groupby("trade_date")
-    for date, group in grouped:
+    for trade_date, group in joined_df.groupby("trade_date"):
         triggered = False
         for i in range(len(group)):
             row = group.iloc[i]
             if pd.isna(row["r1"]) or pd.isna(row["s1"]):
                 continue
-            if not triggered and row["volume"] > row["volume_sma"]:
+            if triggered or pd.isna(row["volume_sma"]):
+                continue
+            if row["volume"] > row["volume_sma"]:
                 entry_price = row["close"]
                 if row["close"] > row["r1"]:
                     direction = "Long"
@@ -96,34 +102,41 @@ if st.button("Run Backtest"):
                 else:
                     continue
                 entry_time = row["timestamp"]
-                sub_df = group.iloc[i+1:]
-                for j, exit_row in sub_df.iterrows():
+                sub_df = group.iloc[i + 1:]
+                for _, exit_row in sub_df.iterrows():
                     price = exit_row["close"]
                     if (direction == "Long" and price >= tp) or (direction == "Short" and price <= tp):
-                        trades.append([date, direction, entry_time, row["close"], exit_row["timestamp"], price, "Target"])
+                        trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Target"])
                         triggered = True
                         break
                     elif (direction == "Long" and price <= sl) or (direction == "Short" and price >= sl):
-                        trades.append([date, direction, entry_time, row["close"], exit_row["timestamp"], price, "Stop"])
+                        trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Stop"])
                         triggered = True
                         break
-                if not triggered:
-                    trades.append([date, direction, entry_time, row["close"], sub_df.iloc[-1]["timestamp"], sub_df.iloc[-1]["close"], "EOD"])
+                if not triggered and not sub_df.empty:
+                    trades.append([trade_date, direction, entry_time, entry_price, sub_df.iloc[-1]["timestamp"], sub_df.iloc[-1]["close"], "EOD"])
                     triggered = True
 
-    results_df = pd.DataFrame(trades, columns=["Date", "Direction", "Entry Time", "Entry Price", "Exit Time", "Exit Price", "Exit Reason"])
-    results_df["PnL"] = results_df.apply(lambda x: x["Exit Price"] - x["Entry Price"] if x["Direction"] == "Long" else x["Entry Price"] - x["Exit Price"], axis=1)
+    # Create trade log
+    results_df = pd.DataFrame(trades, columns=[
+        "Date", "Direction", "Entry Time", "Entry Price", "Exit Time", "Exit Price", "Exit Reason"
+    ])
+    results_df["PnL"] = results_df.apply(
+        lambda x: x["Exit Price"] - x["Entry Price"] if x["Direction"] == "Long"
+        else x["Entry Price"] - x["Exit Price"], axis=1
+    )
 
+    # Show results
     st.subheader("📋 Trade Log")
     st.dataframe(results_df)
 
-    # Summary Stats
-    total_trades = len(results_df)
-    wins = len(results_df[results_df["PnL"] > 0])
-    win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0
-    avg_gain = results_df["PnL"].mean() if total_trades > 0 else 0
+    # Summary
+    total = len(results_df)
+    wins = (results_df["PnL"] > 0).sum()
+    avg_pnl = results_df["PnL"].mean() if total else 0
+    win_rate = (wins / total) * 100 if total else 0
 
     st.subheader("📈 Backtest Summary")
-    st.markdown(f"- Total Trades: **{total_trades}**")
-    st.markdown(f"- Win Rate: **{win_rate:.2f}%**")
-    st.markdown(f"- Average PnL: **{avg_gain:.2f} points**")
+    st.markdown(f"- **Total Trades**: {total}")
+    st.markdown(f"- **Win Rate**: {win_rate:.2f}%")
+    st.markdown(f"- **Average PnL**: {avg_pnl:.2f} points")
