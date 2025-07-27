@@ -86,6 +86,16 @@ if st.button("Analyze"):
 
         df["buildup"] = df.apply(tag_buildup, axis=1)
 
+        # Add previous buildup column for context
+        df["prev_buildup"] = df["buildup"].shift(1)
+
+        # Define valid Short Covering: SC that follows Short Buildup
+        def is_valid_SC(row):
+            return row["buildup"] == "Short Covering" and row["prev_buildup"] == "Short Buildup"
+
+        # Filter valid SC zones
+        valid_sc_df = df[df.apply(is_valid_SC, axis=1)]
+
         # Calculate VWAP per day
         df["vwap_numerator"] = df["close"] * df["volume"]
         df_vwap = (
@@ -114,15 +124,16 @@ if st.button("Analyze"):
             filtered = filtered.sort_values(by="timestamp", ascending=False)
             return filtered.head(n)
 
-        sc_key_zones = get_key_zones(df, "Short Covering")
+        # Use valid SC zones for breakout zones
+        sc_key_zones = valid_sc_df.sort_values(by="timestamp", ascending=False).head(2)
         lu_key_zones = get_key_zones(df, "Longs Unwinding")
 
         if not sc_key_zones.empty:
-            st.markdown("### ✅ Potential Breakout Zones (Short Covering)")
+            st.markdown("### ✅ Potential Breakout Zones (Valid Short Covering)")
             for _, row in sc_key_zones.iterrows():
                 st.markdown(f"- {row['trade_date']} {row['timestamp'].strftime('%H:%M:%S')} → ₹{row['close']:.2f}")
         else:
-            st.info("No Short Covering zones found.")
+            st.info("No valid Short Covering zones found.")
 
         if not lu_key_zones.empty:
             st.markdown("### ⚠️ Avoidance / Breakdown Zones (Longs Unwinding)")
