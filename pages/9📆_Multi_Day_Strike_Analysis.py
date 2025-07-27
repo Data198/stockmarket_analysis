@@ -105,19 +105,28 @@ if st.button("Analyze"):
 
         # Entry zones for option buyers
         st.subheader("📌 Entry Zones for Option Buyers")
-        sc_df = df[df["buildup"] == "Short Covering"]
-        lu_df = df[df["buildup"] == "Longs Unwinding"]
 
-        if not sc_df.empty:
+        def get_key_zones(df, buildup_type, n=2):
+            filtered = df[df["buildup"] == buildup_type]
+            if filtered.empty:
+                return pd.DataFrame()
+            # Sort by timestamp descending (latest first)
+            filtered = filtered.sort_values(by="timestamp", ascending=False)
+            return filtered.head(n)
+
+        sc_key_zones = get_key_zones(df, "Short Covering")
+        lu_key_zones = get_key_zones(df, "Longs Unwinding")
+
+        if not sc_key_zones.empty:
             st.markdown("### ✅ Potential Breakout Zones (Short Covering)")
-            for _, row in sc_df.iterrows():
+            for _, row in sc_key_zones.iterrows():
                 st.markdown(f"- {row['trade_date']} {row['timestamp'].strftime('%H:%M:%S')} → ₹{row['close']:.2f}")
         else:
             st.info("No Short Covering zones found.")
 
-        if not lu_df.empty:
+        if not lu_key_zones.empty:
             st.markdown("### ⚠️ Avoidance / Breakdown Zones (Longs Unwinding)")
-            for _, row in lu_df.iterrows():
+            for _, row in lu_key_zones.iterrows():
                 st.markdown(f"- {row['trade_date']} {row['timestamp'].strftime('%H:%M:%S')} → ₹{row['close']:.2f}")
         else:
             st.info("No Longs Unwinding zones found.")
