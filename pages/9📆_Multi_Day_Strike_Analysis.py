@@ -16,24 +16,17 @@ engine = create_engine(f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB
 # -------------------------
 # 🎯 Page Title
 # -------------------------
-st.title("📆 Multi-Day Strike Analysis with VWAP")
-st.markdown("Analyze buildup patterns, VWAP, and Price/OI movement for a selected option strike.")
+st.title("📈 Multi-Day Strike Analysis with Entry Zones")
 
-# -------------------------
-# 🎛️ User Input
-# -------------------------
 with st.sidebar:
-    st.header("Strike Filters")
+    st.header("🔎 Strike Filters")
     symbol = st.text_input("Symbol", value="NIFTY")
     strike_price = st.number_input("Strike Price", value=25100)
     option_type = st.selectbox("Option Type", ["CE", "PE"])
     expiry_date = st.date_input("Expiry Date")
-    start_date = st.date_input("From Date")
-    end_date = st.date_input("To Date")
+    start_date = st.date_input("Start Date")
+    end_date = st.date_input("End Date")
 
-# -------------------------
-# 🔍 Data Load and Analysis
-# -------------------------
 if st.button("Analyze"):
     query = text("""
         SELECT * FROM option_3min_ohlc
@@ -57,7 +50,6 @@ if st.button("Analyze"):
     if df.empty:
         st.warning("No data found.")
     else:
-        # 🧮 Buildup tagging
         df["oi_change"] = df["open_interest"].diff()
         df["price_change"] = df["close"].diff()
 
@@ -72,28 +64,41 @@ if st.button("Analyze"):
                 return "Short Covering"
             elif row["price_change"] < 0 and row["oi_change"] < 0:
                 return "Longs Unwinding"
-            else:
-                return "Neutral"
+            return "Neutral"
 
         df["buildup"] = df.apply(tag_buildup, axis=1)
-
-        # 📊 VWAP Calculation
         df["vwap_numerator"] = df["close"] * df["volume"]
+
         df_vwap = df.groupby("trade_date").agg(
-            vwap_numerator=("vwap_numerator", "sum"),
-            total_volume=("volume", "sum")
+            total_volume=("volume", "sum"),
+            total_vwap_value=("vwap_numerator", "sum")
         )
-        df_vwap["VWAP"] = df_vwap["vwap_numerator"] / df_vwap["total_volume"]
-
-        # 📋 Daily Buildup Summary
-        buildup_summary = df.groupby(["trade_date", "buildup"]).size().unstack(fill_value=0)
-
-        # 📈 Display
-        st.subheader("🔎 Daily Buildup Summary")
-        st.dataframe(buildup_summary)
+        df_vwap["VWAP"] = df_vwap["total_vwap_value"] / df_vwap["total_volume"]
 
         st.subheader("📊 Daily VWAP Levels")
         st.dataframe(df_vwap[["VWAP"]].round(2))
 
-        st.subheader("📈 Intraday Price & OI Trend")
+        st.subheader("📋 Buildup Summary by Day")
+        buildup_summary = df.groupby(["trade_date", "buildup"]).size().unstack(fill_value=0)
+        st.dataframe(buildup_summary)
+
+        st.subheader("📌 Entry Zones for Option Buyers")
+        sc_df = df[df["buildup"] == "Short Covering"]
+        lu_df = df[df["buildup"] == "Longs Unwinding"]
+
+        if not sc_df.empty:
+            st.markdown("### ✅ Potential Breakout Zones (SC)")
+            for i, row in sc_df.iterrows():
+                st.markdown(f"- {row['trade_date']} {row['timestamp']} → ₹{row['close']:.2f}")
+        else:
+            st.info("No Short Covering zones found.")
+
+        if not lu_df.empty:
+            st.markdown("### ⚠️ Avoidance / Breakdown Zones (LU)")
+            for i, row in lu_df.iterrows():
+                st.markdown(f"- {row['trade_date']} {row['timestamp']} → ₹{row['close']:.2f}")
+        else:
+            st.info("No Longs Unwinding zones found.")
+
+        st.subheader("📈 Price vs Open Interest")
         st.line_chart(df.set_index("timestamp")[["close", "open_interest"]])
