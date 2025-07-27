@@ -73,70 +73,82 @@ if st.button("Run Backtest"):
         levels_filtered,
         left_on="trade_date",
         right_on="apply_date",
-        how="left"
+        how="left",
+        suffixes=('', '_level')
     ).sort_values("timestamp")
 
-    # Rolling volume SMA
-    joined_df["volume_sma"] = joined_df.groupby("trade_date")["volume"].transform(lambda x: x.rolling(volume_window).mean())
+    # Debug: Check columns to ensure 'volume' exists
+    st.write("Columns in joined_df:", joined_df.columns.tolist())
 
-    # Backtest Loop
-    trades = []
-    for trade_date, group in joined_df.groupby("trade_date"):
-        triggered = False
-        for i in range(len(group)):
-            row = group.iloc[i]
-            if pd.isna(row["r1"]) or pd.isna(row["s1"]):
-                continue
-            if triggered or pd.isna(row["volume_sma"]):
-                continue
-            if row["volume"] > row["volume_sma"]:
-                entry_price = row["close"]
-                if row["close"] > row["r1"]:
-                    direction = "Long"
-                    sl = entry_price - sl_points
-                    tp = entry_price + tp_points
-                elif row["close"] < row["s1"]:
-                    direction = "Short"
-                    sl = entry_price + sl_points
-                    tp = entry_price - tp_points
-                else:
+    if "volume" not in joined_df.columns:
+        st.error("Error: 'volume' column not found in merged data. Please check your data source.")
+    else:
+        # Drop rows where volume is NaN to avoid errors in rolling calculation
+        joined_df = joined_df.dropna(subset=["volume"])
+
+        # Calculate rolling volume SMA grouped by trade_date
+        joined_df["volume_sma"] = joined_df.groupby("trade_date")["volume"].transform(
+            lambda x: x.rolling(volume_window, min_periods=1).mean()
+        )
+
+        # Proceed with your backtest logic here...
+        trades = []
+        for trade_date, group in joined_df.groupby("trade_date"):
+            triggered = False
+            for i in range(len(group)):
+                row = group.iloc[i]
+                if pd.isna(row.get("r1")) or pd.isna(row.get("s1")):
                     continue
-                entry_time = row["timestamp"]
-                sub_df = group.iloc[i + 1:]
-                for _, exit_row in sub_df.iterrows():
-                    price = exit_row["close"]
-                    if (direction == "Long" and price >= tp) or (direction == "Short" and price <= tp):
-                        trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Target"])
+                if triggered or pd.isna(row["volume_sma"]):
+                    continue
+                if row["volume"] > row["volume_sma"]:
+                    entry_price = row["close"]
+                    if row["close"] > row["r1"]:
+                        direction = "Long"
+                        sl = entry_price - sl_points
+                        tp = entry_price + tp_points
+                    elif row["close"] < row["s1"]:
+                        direction = "Short"
+                        sl = entry_price + sl_points
+                        tp = entry_price - tp_points
+                    else:
+                        continue
+                    entry_time = row["timestamp"]
+                    sub_df = group.iloc[i + 1:]
+                    for _, exit_row in sub_df.iterrows():
+                        price = exit_row["close"]
+                        if (direction == "Long" and price >= tp) or (direction == "Short" and price <= tp):
+                            trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Target"])
+                            triggered = True
+                            break
+                        elif (direction == "Long" and price <= sl) or (direction == "Short" and price >= sl):
+                            trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Stop"])
+                            triggered = True
+                            break
+                    if not triggered and not sub_df.empty:
+                        trades.append([trade_date, direction, entry_time, entry_price, sub_df.iloc[-1]["timestamp"], sub_df.iloc[-1]["close"], "EOD"])
                         triggered = True
-                        break
-                    elif (direction == "Long" and price <= sl) or (direction == "Short" and price >= sl):
-                        trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Stop"])
-                        triggered = True
-                        break
-                if not triggered and not sub_df.empty:
-                    trades.append([trade_date, direction, entry_time, entry_price, sub_df.iloc[-1]["timestamp"], sub_df.iloc[-1]["close"], "EOD"])
-                    triggered = True
 
-    # Create trade log
-    results_df = pd.DataFrame(trades, columns=[
-        "Date", "Direction", "Entry Time", "Entry Price", "Exit Time", "Exit Price", "Exit Reason"
-    ])
-    results_df["PnL"] = results_df.apply(
-        lambda x: x["Exit Price"] - x["Entry Price"] if x["Direction"] == "Long"
-        else x["Entry Price"] - x["Exit Price"], axis=1
-    )
+        # Create trade log
+        results_df = pd.DataFrame(trades, columns=[
+            "Date", "Direction", "Entry Time", "Entry Price", "Exit Time", "Exit Price", "Exit Reason"
+        ])
+        results_df["PnL"] = results_df.apply(
+            lambda x: x["Exit Price"] - x["Entry Price"] if x["Direction"] == "Long"
+            else x["Entry Price"] - x["Exit Price"], axis=1
+        )
 
-    # Show results
-    st.subheader("📋 Trade Log")
-    st.dataframe(results_df)
+        # Show results
+        st.subheader("📋 Trade Log")
+        st.dataframe(results_df)
 
-    # Summary
-    total = len(results_df)
-    wins = (results_df["PnL"] > 0).sum()
-    avg_pnl = results_df["PnL"].mean() if total else 0
-    win_rate = (wins / total) * 100 if total else 0
+        # Summary
+        total = len(results_df)
+        wins = (results_df["PnL"] > 0).sum()
+        avg_pnl = results_df["PnL"].mean() if total else 0
+        win_rate = (wins / total) * 100 if total else 0
 
-    st.subheader("📈 Backtest Summary")
-    st.markdown(f"- **Total Trades**: {total}")
-    st.markdown(f"- **Win Rate**: {win_rate:.2f}%")
-    st.markdown(f"- **Average PnL**: {avg_pnl:.2f} points")
+        st.subheader("📈 Backtest Summary")
+        st.markdown(f"- **Total Trades**: {total}")
+        st.markdown(f"- **Win Rate**: {win_rate:.2f}%")
+        st.markdown(f"- **Average PnL**: {avg_pnl:.2f} points")
