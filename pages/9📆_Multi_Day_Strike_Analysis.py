@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
 from urllib.parse import quote
+import plotly.graph_objects as go
 
 # -------------------------
 # 🔐 Database Connection
@@ -19,13 +20,13 @@ engine = create_engine(
 # -------------------------
 # 🎯 Page Title
 # -------------------------
-st.title("📈 Multi-Day Strike Analysis with Entry Zones")
+st.title("📈 Multi-Day OI & Price Trend Analysis")
 
 # -------------------------
 # Sidebar Filters
 # -------------------------
 with st.sidebar:
-    st.header("🔎 Strike Filters")
+    st.header("🔎 Filters")
     symbol = st.text_input("Symbol", value="NIFTY")
     strike_price = st.number_input("Strike Price", value=25100)
     option_type = st.selectbox("Option Type", ["CE", "PE"])
@@ -37,15 +38,17 @@ with st.sidebar:
 # Main Analysis Trigger
 # -------------------------
 if st.button("Analyze"):
+
     query = text(
         """
-        SELECT * FROM option_3min_ohlc
+        SELECT trade_date, timestamp, open_interest, close, volume
+        FROM option_3min_ohlc
         WHERE symbol = :symbol
           AND strike_price = :strike
           AND option_type = :otype
           AND expiry_date = :expiry
           AND trade_date BETWEEN :start AND :end
-        ORDER BY timestamp
+        ORDER BY trade_date, timestamp
         """
     )
 
@@ -66,82 +69,94 @@ if st.button("Analyze"):
     if df.empty:
         st.warning("No data found for the selected filters.")
     else:
-        # Calculate OI and price changes
-        df["oi_change"] = df["open_interest"].diff()
-        df["price_change"] = df["close"].diff()
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df['trade_date'] = pd.to_datetime(df['trade_date'])
 
-        # Tag buildup types
-        def tag_buildup(row):
-            if pd.isna(row["oi_change"]) or pd.isna(row["price_change"]):
-                return None
-            if row["price_change"] > 0 and row["oi_change"] > 0:
-                return "Long Buildup"
-            elif row["price_change"] < 0 and row["oi_change"] > 0:
-                return "Short Buildup"
-            elif row["price_change"] > 0 and row["oi_change"] < 0:
-                return "Short Covering"
-            elif row["price_change"] < 0 and row["oi_change"] < 0:
-                return "Longs Unwinding"
-            return "Neutral"
+        # Aggregate data per day: get daily close price and last OI
+        daily_data = df.groupby('trade_date').agg(
+            daily_close=('close', 'last'),
+            daily_oi=('open_interest', 'last'),
+            daily_volume=('volume', 'sum')
+        ).reset_index()
 
-        df["buildup"] = df.apply(tag_buildup, axis=1)
+        # Calculate daily changes
+        daily_data['price_change'] = daily_data['daily_close'].diff()
+        daily_data['price_change_pct'] = daily_data['daily_close'].pct_change() * 100
+        daily_data['oi_change'] = daily_data['daily_oi'].diff()
+        daily_data['oi_change_pct'] = daily_data['daily_oi'].pct_change() * 100
 
-        # Add previous buildup column for context
-        df["prev_buildup"] = df["buildup"].shift(1)
+        # Calculate cumulative changes from start date
+        daily_data['cum_price_change'] = daily_data['daily_close'] - daily_data['daily_close'].iloc[0]
+        daily_data['cum_oi_change'] = daily_data['daily_oi'] - daily_data['daily_oi'].iloc[0]
 
-        # Define valid Short Covering: SC that follows Short Buildup
-        def is_valid_SC(row):
-            return row["buildup"] == "Short Covering" and row["prev_buildup"] == "Short Buildup"
+        # Display daily summary table
+        st.subheader("📅 Daily Summary")
+        st.dataframe(daily_data.style.format({
+            'daily_close': '₹{:.2f}',
+            'daily_oi': '{:,.0f}',
+            'daily_volume': '{:,.0f}',
+            'price_change': '₹{:.2f}',
+            'price_change_pct': '{:.2f}%',
+            'oi_change': '{:,.0f}',
+            'oi_change_pct': '{:.2f}%',
+            'cum_price_change': '₹{:.2f}',
+            'cum_oi_change': '{:,.0f}'
+        }))
 
-        # Filter valid SC zones
-        valid_sc_df = df[df.apply(is_valid_SC, axis=1)]
+        # Plot multi-day price and OI trends
+        fig = go.Figure()
 
-        # Calculate VWAP per day
-        df["vwap_numerator"] = df["close"] * df["volume"]
-        df_vwap = (
-            df.groupby("trade_date")
-            .agg(total_volume=("volume", "sum"), total_vwap_value=("vwap_numerator", "sum"))
+        fig.add_trace(go.Scatter(
+            x=daily_data['trade_date'], y=daily_data['daily_close'],
+            mode='lines+markers', name='Daily Close Price',
+            line=dict(color='blue')
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=daily_data['trade_date'], y=daily_data['daily_oi'],
+            mode='lines+markers', name='Daily Open Interest',
+            line=dict(color='orange'), yaxis='y2'
+        ))
+
+        # Layout with secondary y-axis
+        fig.update_layout(
+            title=f"Price and Open Interest Trend for {symbol} {strike_price} {option_type}",
+            xaxis_title="Trade Date",
+            yaxis=dict(
+                title="Price (₹)",
+                side='left'
+            ),
+            yaxis2=dict(
+                title="Open Interest",
+                overlaying='y',
+                side='right'
+            ),
+            legend=dict(x=0.01, y=0.99),
+            height=500
         )
-        df_vwap["VWAP"] = df_vwap["total_vwap_value"] / df_vwap["total_volume"]
 
-        # Display VWAP levels
-        st.subheader("📊 Daily VWAP Levels")
-        st.dataframe(df_vwap[["VWAP"]].round(2))
+        st.plotly_chart(fig, use_container_width=True)
 
-        # Display buildup summary by day
-        st.subheader("📋 Buildup Summary by Day")
-        buildup_summary = df.groupby(["trade_date", "buildup"]).size().unstack(fill_value=0)
-        st.dataframe(buildup_summary)
+        # Interpretation / Summary
+        st.subheader("📋 Multi-Day Trend Interpretation")
 
-        # Entry zones for option buyers
-        st.subheader("📌 Entry Zones for Option Buyers")
+        price_trend = "uptrend" if daily_data['cum_price_change'].iloc[-1] > 0 else "downtrend"
+        oi_trend = "rising" if daily_data['cum_oi_change'].iloc[-1] > 0 else "falling"
 
-        def get_key_zones(df, buildup_type, n=2):
-            filtered = df[df["buildup"] == buildup_type]
-            if filtered.empty:
-                return pd.DataFrame()
-            # Sort by timestamp descending (latest first)
-            filtered = filtered.sort_values(by="timestamp", ascending=False)
-            return filtered.head(n)
+        st.markdown(f"""
+        - **Price Trend:** {price_trend} ({daily_data['cum_price_change'].iloc[-1]:.2f} ₹ change)
+        - **Open Interest Trend:** {oi_trend} ({daily_data['cum_oi_change'].iloc[-1]:,.0f} contracts change)
+        """)
 
-        # Use valid SC zones for breakout zones
-        sc_key_zones = valid_sc_df.sort_values(by="timestamp", ascending=False).head(2)
-        lu_key_zones = get_key_zones(df, "Longs Unwinding")
-
-        if not sc_key_zones.empty:
-            st.markdown("### ✅ Potential Breakout Zones (Valid Short Covering)")
-            for _, row in sc_key_zones.iterrows():
-                st.markdown(f"- {row['trade_date']} {row['timestamp'].strftime('%H:%M:%S')} → ₹{row['close']:.2f}")
+        # Basic combined interpretation
+        if price_trend == "uptrend" and oi_trend == "rising":
+            st.success("Bullish trend confirmed: price and OI both rising, indicating fresh long positions.")
+        elif price_trend == "downtrend" and oi_trend == "rising":
+            st.warning("Bearish trend with rising OI: new short positions entering the market.")
+        elif price_trend == "uptrend" and oi_trend == "falling":
+            st.info("Price rising but OI falling: likely short covering, trend may be weaker.")
+        elif price_trend == "downtrend" and oi_trend == "falling":
+            st.info("Price falling and OI falling: long unwinding, trend may be losing strength.")
         else:
-            st.info("No valid Short Covering zones found.")
-
-        if not lu_key_zones.empty:
-            st.markdown("### ⚠️ Avoidance / Breakdown Zones (Longs Unwinding)")
-            for _, row in lu_key_zones.iterrows():
-                st.markdown(f"- {row['trade_date']} {row['timestamp'].strftime('%H:%M:%S')} → ₹{row['close']:.2f}")
-        else:
-            st.info("No Longs Unwinding zones found.")
-
-        # Price vs Open Interest chart
-        st.subheader("📈 Price vs Open Interest")
-        st.line_chart(df.set_index("timestamp")[["close", "open_interest"]])
+            st.info("Mixed signals, further analysis recommended.")
