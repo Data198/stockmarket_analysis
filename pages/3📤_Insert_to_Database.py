@@ -21,7 +21,9 @@ if not login(engine):
 # --- Page UI ---
 st.title("📤 Insert Bhavcopies to Database")
 st.markdown("This tool loads a selected bhavcopy `.csv` file based on date from your local folder into the PostgreSQL database.")
-FOLDER_PATH = "F:/My Drive/Personal Info/Stock Market/New OI Analysis"
+
+# Use raw string for Windows path with backslashes
+FOLDER_PATH = r"F:\My Drive\Personal Info\Stock Market\New OI Analysis"
 st.write(f"📁 Folder path: `{FOLDER_PATH}`")
 
 # --- Check if folder exists ---
