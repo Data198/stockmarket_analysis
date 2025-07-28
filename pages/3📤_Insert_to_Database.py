@@ -24,6 +24,11 @@ st.markdown("This tool loads a selected bhavcopy `.csv` file based on date from 
 FOLDER_PATH = "F:/My Drive/Personal Info/Stock Market/New OI Analysis"
 st.write(f"📁 Folder path: `{FOLDER_PATH}`")
 
+# --- Check if folder exists ---
+if not os.path.exists(FOLDER_PATH):
+    st.error(f"❌ Folder path does not exist: `{FOLDER_PATH}`. Please update the path to a valid directory.")
+    st.stop()
+
 # --- Helper Functions ---
 def already_loaded(trade_date):
     query = text("SELECT 1 FROM fact_oi_bhavcopy WHERE trade_date = :dt LIMIT 1")
