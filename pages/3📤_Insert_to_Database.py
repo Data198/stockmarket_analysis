@@ -22,7 +22,6 @@ if not login(engine):
 st.title("📤 Insert Bhavcopies to Database")
 st.markdown("This tool loads a selected bhavcopy `.csv` file based on date from your local folder into the PostgreSQL database.")
 
-# Use raw string for Windows path with backslashes
 FOLDER_PATH = r"F:\My Drive\Personal Info\Stock Market\New OI Analysis"
 st.write(f"📁 Folder path: `{FOLDER_PATH}`")
 
@@ -37,22 +36,11 @@ def already_loaded(trade_date):
     with engine.connect() as conn:
         return conn.execute(query, {"dt": trade_date}).fetchone() is not None
 
-def log_insert(filename):
-    query = text("INSERT INTO bhavcopy_load_log (filename, loaded_on) VALUES (:file, now()) ON CONFLICT DO NOTHING")
-    with engine.begin() as conn:
-        conn.execute(query, {"file": filename})
-
-def log_skip(filepath, reason):
-    query = text("INSERT INTO bhavcopy_load_log (filename, loaded_on, skip_reason) VALUES (:file, now(), :reason) ON CONFLICT DO NOTHING")
-    with engine.begin() as conn:
-        conn.execute(query, {"file": os.path.basename(filepath), "reason": reason})
-
 def process_file(filepath):
     try:
         df = pd.read_csv(filepath)
     except Exception as e:
         st.warning(f"❌ Could not read `{os.path.basename(filepath)}`: {e}")
-        log_skip(filepath, f"Read error: {e}")
         return None
 
     df = df.rename(columns={
@@ -103,24 +91,20 @@ def load_bhavcopy_by_date(selected_date):
 
         if df is None or df.empty:
             skipped.append(file)
-            log_skip(full_path, "Empty or invalid data")
             continue
 
         trade_date = df['trade_date'].iloc[0]
 
         if already_loaded(trade_date):
             skipped.append(file)
-            log_skip(full_path, "Already loaded")
             continue
 
         try:
             df.to_sql("fact_oi_bhavcopy", con=engine, if_exists='append', index=False)
-            log_insert(file)
             inserted.append(file)
         except Exception as e:
             st.error(f"❌ Failed to insert `{file}`: {e}")
             skipped.append(file)
-            log_skip(full_path, f"Insert error: {e}")
 
     return inserted, skipped
 
