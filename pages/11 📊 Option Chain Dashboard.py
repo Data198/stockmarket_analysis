@@ -58,6 +58,17 @@ df['readiness_score'] = df.apply(
     lambda row: int(0.5 <= abs(row['delta']) <= 0.7) + int(row['VaR_pct'] <= 80), axis=1
 )
 
+# --- Trade Side Toggle ---
+trade_side = st.sidebar.radio("Trade Side", ["Buyer", "Seller"], index=0)
+
+# --- Risk Management: Stop Loss and Target ---
+if trade_side == "Buyer":
+    df['stop_loss'] = df['premium'] * 0.4
+    df['target'] = df['premium'] * 1.2
+else:
+    df['stop_loss'] = df['premium'] * 0.3
+    df['target'] = df['premium'] * 0.6
+
 # --- Trade Strategy Suggestion ---
 def suggest_strategy(row):
     if row['readiness_score'] == 2 and row['delta'] > 0:
@@ -70,10 +81,6 @@ def suggest_strategy(row):
         return "Avoid"
 
 df['trade_strategy'] = df.apply(suggest_strategy, axis=1)
-
-# --- Risk Management: Stop Loss and Target ---
-df['stop_loss'] = df['premium'] * 0.3
-df['target'] = df['premium'] * 0.6
 
 # --- Color coding readiness tags ---
 def readiness_tag(row):
