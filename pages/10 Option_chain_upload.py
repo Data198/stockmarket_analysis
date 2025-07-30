@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- Page Setup ---
 st.set_page_config(page_title="Upload Option Chain to DB", layout="centered")
-st.title("📤 Upload Option Chain to PostgreSQL")
+st.title("📤 Upload Option Chain to Database")
 
 # --- DB Connection ---
 DB_USER = st.secrets["postgres"]["user"]
