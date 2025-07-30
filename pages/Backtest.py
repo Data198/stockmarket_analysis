@@ -126,6 +126,54 @@ if st.button("Run Backtest"):
         win_rate = (wins / total) * 100
         return total, win_rate, avg_pnl
 
+    def backtest_collect_trades(sl_points, tp_points):
+        trades = []
+        for trade_date, group in joined_df.groupby("trade_date"):
+            triggered = False
+            for i in range(len(group)):
+                row = group.iloc[i]
+                if pd.isna(row.get("r1")) or pd.isna(row.get("s1")):
+                    continue
+                if triggered or pd.isna(row["volume_sma"]):
+                    continue
+                if row["volume"] > row["volume_sma"]:
+                    entry_price = row["close"]
+                    if row["close"] > row["r1"]:
+                        direction = "Long"
+                        sl = entry_price - sl_points
+                        tp = entry_price + tp_points
+                    elif row["close"] < row["s1"]:
+                        direction = "Short"
+                        sl = entry_price + sl_points
+                        tp = entry_price - tp_points
+                    else:
+                        continue
+                    entry_time = row["timestamp"]
+                    sub_df = group.iloc[i + 1:]
+                    for _, exit_row in sub_df.iterrows():
+                        price = exit_row["close"]
+                        if (direction == "Long" and price >= tp) or (direction == "Short" and price <= tp):
+                            trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Target"])
+                            triggered = True
+                            break
+                        elif (direction == "Long" and price <= sl) or (direction == "Short" and price >= sl):
+                            trades.append([trade_date, direction, entry_time, entry_price, exit_row["timestamp"], price, "Stop"])
+                            triggered = True
+                            break
+                    if not triggered and not sub_df.empty:
+                        trades.append([trade_date, direction, entry_time, entry_price, sub_df.iloc[-1]["timestamp"], sub_df.iloc[-1]["close"], "EOD"])
+                        triggered = True
+        results_df = pd.DataFrame(trades, columns=[
+            "Date", "Direction", "Entry Time", "Entry Price", "Exit Time", "Exit Price", "Exit Reason"
+        ])
+        if results_df.empty:
+            return None
+        results_df["PnL"] = results_df.apply(
+            lambda x: x["Exit Price"] - x["Entry Price"] if x["Direction"] == "Long"
+            else x["Entry Price"] - x["Exit Price"], axis=1
+        )
+        return results_df
+
     progress_bar = st.progress(0)
     total_combinations = len(sl_values) * len(tp_values)
     count = 0
@@ -145,3 +193,9 @@ if st.button("Run Backtest"):
 
     if best_combo:
         st.success(f"Best combination: Stop Loss = {best_combo[0]} pts, Target = {best_combo[1]} pts with Average PnL = {best_avg_pnl:.2f}")
+        st.subheader("Detailed Trades for Best Combination")
+        best_trades_df = backtest_collect_trades(best_combo[0], best_combo[1])
+        if best_trades_df is not None:
+            st.dataframe(best_trades_df)
+        else:
+            st.write("No trades found for the best combination.")
