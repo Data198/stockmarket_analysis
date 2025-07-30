@@ -72,7 +72,6 @@ def suggest_strategy(row):
 df['trade_strategy'] = df.apply(suggest_strategy, axis=1)
 
 # --- Risk Management: Stop Loss and Target ---
-# Example: Stop loss = 30% of premium, Target = 60% of premium (can be adjusted)
 df['stop_loss'] = df['premium'] * 0.3
 df['target'] = df['premium'] * 0.6
 
@@ -92,13 +91,18 @@ st.sidebar.header("🔎 Additional Filters")
 option_types = df['option_type'].unique().tolist()
 selected_option_types = st.sidebar.multiselect("Option Type", option_types, default=option_types)
 
-min_oi = int(df['open_interest'].min()) if 'open_interest' in df.columns else 0
-max_oi = int(df['open_interest'].max()) if 'open_interest' in df.columns else 0
-oi_filter = st.sidebar.slider("Open Interest Range", min_oi, max_oi, (min_oi, max_oi)) if 'open_interest' in df.columns else None
+oi_filter = None
+vol_filter = None
 
-min_vol = int(df['volume'].min()) if 'volume' in df.columns else 0
-max_vol = int(df['volume'].max()) if 'volume' in df.columns else 0
-vol_filter = st.sidebar.slider("Volume Range", min_vol, max_vol, (min_vol, max_vol)) if 'volume' in df.columns else None
+if 'open_interest' in df.columns:
+    min_oi = int(df['open_interest'].min())
+    max_oi = int(df['open_interest'].max())
+    oi_filter = st.sidebar.slider("Open Interest Range", min_oi, max_oi, (min_oi, max_oi))
+
+if 'volume' in df.columns:
+    min_vol = int(df['volume'].min())
+    max_vol = int(df['volume'].max())
+    vol_filter = st.sidebar.slider("Volume Range", min_vol, max_vol, (min_vol, max_vol))
 
 # Apply filters
 filtered_df = df[df['option_type'].isin(selected_option_types)]
@@ -119,7 +123,12 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # --- Tab 1: Strike Overview ---
 with tab1:
     st.subheader("🔍 Strike-wise Sensitivities & Metrics")
-    st.dataframe(filtered_df[['strike', 'option_type', 'premium', 'delta', 'gamma', 'vega', 'open_interest', 'volume']])
+    cols = ['strike', 'option_type', 'premium', 'delta', 'gamma', 'vega']
+    if 'open_interest' in filtered_df.columns:
+        cols.append('open_interest')
+    if 'volume' in filtered_df.columns:
+        cols.append('volume')
+    st.dataframe(filtered_df[cols])
 
 # --- Tab 2: VaR Analysis ---
 with tab2:
@@ -133,20 +142,23 @@ with tab3:
     if pin_df.empty:
         st.info("No pinning zone strikes found for selected filters.")
     else:
-        st.dataframe(pin_df[['strike', 'premium', 'delta', 'VaR', 'open_interest', 'volume']])
+        pin_cols = ['strike', 'premium', 'delta', 'VaR']
+        if 'open_interest' in pin_df.columns:
+            pin_cols.append('open_interest')
+        if 'volume' in pin_df.columns:
+            pin_cols.append('volume')
+        st.dataframe(pin_df[pin_cols])
 
 # --- Tab 4: Readiness & Strategy ---
 with tab4:
     st.subheader("🤖 AI-Style Readiness Tags & Trade Strategies")
-    # Color code readiness_tag column
     def color_readiness(val):
         if val == "✅ BUY":
-            color = 'green'
+            return 'color: green'
         elif val == "⚠️ WATCH":
-            color = 'orange'
+            return 'color: orange'
         else:
-            color = 'red'
-        return f'color: {color}'
+            return 'color: red'
 
     st.dataframe(
         filtered_df[['strike', 'option_type', 'premium', 'VaR_pct', 'readiness_score', 'readiness_tag', 'trade_strategy']]
@@ -157,7 +169,6 @@ with tab4:
 with tab5:
     st.subheader("📈 Visualizations")
 
-    # Greeks vs Strike
     fig, ax = plt.subplots(figsize=(10, 5))
     sns.lineplot(data=filtered_df, x='strike', y='delta', hue='option_type', ax=ax)
     ax.set_title("Delta vs Strike")
@@ -168,13 +179,11 @@ with tab5:
     ax2.set_title("Gamma vs Strike")
     st.pyplot(fig2)
 
-    # VaR distribution
     fig3, ax3 = plt.subplots(figsize=(10, 5))
     sns.histplot(filtered_df['VaR_pct'], bins=30, kde=True, ax=ax3)
     ax3.set_title("VaR % Distribution")
     st.pyplot(fig3)
 
-    # Open Interest Heatmap (if available)
     if 'open_interest' in filtered_df.columns:
         oi_pivot = filtered_df.pivot_table(index='option_type', columns='strike', values='open_interest', fill_value=0)
         fig4, ax4 = plt.subplots(figsize=(12, 4))
@@ -182,7 +191,6 @@ with tab5:
         ax4.set_title("Open Interest Heatmap")
         st.pyplot(fig4)
 
-    # Volume Heatmap (if available)
     if 'volume' in filtered_df.columns:
         vol_pivot = filtered_df.pivot_table(index='option_type', columns='strike', values='volume', fill_value=0)
         fig5, ax5 = plt.subplots(figsize=(12, 4))
