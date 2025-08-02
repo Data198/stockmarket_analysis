@@ -14,7 +14,7 @@ db = st.secrets["postgres"]["database"]
 engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}")
 
 # ------------------------------
-# Function: Test 40% Intraday Reversal Using First Candle Close as Base
+# Function: Test 40% Intraday Reversal Using First Candle Close as Base (After First Candle Close)
 # ------------------------------
 def test_40pct_reversal_post_first_candle(df, price_col='close', time_col='timestamp', strike_col='strike_price'):
     df = df.sort_values(by=[strike_col, time_col]).copy()
@@ -23,6 +23,10 @@ def test_40pct_reversal_post_first_candle(df, price_col='close', time_col='times
     df['reversal_after_threshold'] = False
 
     reversal_window = 5  # 5 bars = 15 minutes for 3-min intervals
+
+    # Define market open and first candle close time (assuming timestamps are datetime)
+    market_open_time = pd.to_datetime(df[time_col].dt.date.min().strftime('%Y-%m-%d') + ' 09:15:00')
+    first_candle_close_time = market_open_time + pd.Timedelta(minutes=3)  # 9:18 AM
 
     results = []
 
@@ -34,7 +38,14 @@ def test_40pct_reversal_post_first_candle(df, price_col='close', time_col='times
             continue
 
         # Use first candle's close as base price for thresholds
-        first_close = group.loc[0, price_col]
+        # But only consider the first candle that closes at or after first_candle_close_time
+        first_candle = group[group[time_col] >= first_candle_close_time].head(1)
+        if first_candle.empty:
+            # No data after first candle close, skip
+            results.append(group)
+            continue
+
+        first_close = first_candle.iloc[0][price_col]
 
         upper_threshold = first_close + 0.40 * first_close
         lower_threshold = first_close - 0.40 * first_close
@@ -42,6 +53,12 @@ def test_40pct_reversal_post_first_candle(df, price_col='close', time_col='times
         for i, row in group.iterrows():
             if i == 0:
                 continue  # skip first candle
+
+            current_time = row[time_col]
+
+            # Only apply threshold logic after first candle close time
+            if current_time < first_candle_close_time:
+                continue
 
             price = row[price_col]
 
