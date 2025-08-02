@@ -29,6 +29,10 @@ def test_40pct_reversal_post_first_candle(df, price_col='close', low_col='low', 
     for strike, group in df.groupby(strike_col):
         group = group.reset_index(drop=True)
 
+        if group.empty or len(group) < 2:
+            results.append(group)
+            continue
+
         # First candle low and high as base
         first_candle = group.iloc[0]
         base_low = first_candle[low_col]
@@ -72,6 +76,19 @@ trade_date = st.date_input("Select Trade Date", value=pd.to_datetime("2025-08-01
 symbol = st.text_input("Enter Symbol", value="NIFTY")
 expiry_date = st.date_input("Select Expiry Date", value=pd.to_datetime("2025-08-07"))
 
+# Format dates as strings for SQL query parameters
+trade_date_str = trade_date.strftime('%Y-%m-%d') if hasattr(trade_date, 'strftime') else str(trade_date)
+expiry_date_str = expiry_date.strftime('%Y-%m-%d') if hasattr(expiry_date, 'strftime') else str(expiry_date)
+
+params = {
+    "trade_date": trade_date_str,
+    "symbol": symbol,
+    "expiry_date": expiry_date_str
+}
+
+# Debug print
+st.write("Query Parameters:", params)
+
 # ------------------------------
 # Load data from DB
 # ------------------------------
@@ -85,14 +102,12 @@ AND expiry_date = :expiry_date
 ORDER BY strike_price, timestamp
 """
 
-params = {
-    "trade_date": trade_date,
-    "symbol": symbol,
-    "expiry_date": expiry_date
-}
-
-with engine.connect() as conn:
-    df = pd.read_sql(text(query), conn, params=params)
+try:
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn, params=params)
+except Exception as e:
+    st.error(f"Error loading data from database: {e}")
+    st.stop()
 
 if df.empty:
     st.warning("No data found for the selected parameters.")
