@@ -192,3 +192,21 @@ else:
     st.dataframe(df_trades)
 
     st.markdown(f"Total trades generated: {len(df_trades)}")
+
+    # ------------------------------
+    # Monthly Consolidated Summary
+    # ------------------------------
+    df_trades['entry_time'] = pd.to_datetime(df_trades['entry_time'])
+    df_trades['year_month'] = df_trades['entry_time'].dt.to_period('M')
+
+    monthly_summary = df_trades.groupby('year_month').agg(
+        total_trades=('pnl', 'count'),
+        total_pnl=('pnl', 'sum'),
+        avg_pnl=('pnl', 'mean'),
+        winning_trades=('pnl', lambda x: (x > 0).sum())
+    ).reset_index()
+
+    monthly_summary['win_rate_pct'] = 100 * monthly_summary['winning_trades'] / monthly_summary['total_trades']
+
+    st.markdown("### Monthly Consolidated Trade Summary")
+    st.dataframe(monthly_summary)
