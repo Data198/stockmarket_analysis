@@ -142,16 +142,22 @@ def generate_complete_trades(df, price_col='close', time_col='timestamp', strike
 # ------------------------------
 st.title("Intraday 40% Premium Complete Trade Generator")
 
-trade_date = st.date_input("Select Trade Date", value=pd.to_datetime("2025-08-01"))
+# Date range input for filtering trade_date
+trade_date_range = st.date_input("Select Trade Date Range",
+                                value=(pd.to_datetime("2025-08-01"), pd.to_datetime("2025-08-31")),
+                                help="Select start and end date")
+
 symbol = st.text_input("Enter Symbol", value="NIFTY")
 expiry_date = st.date_input("Select Expiry Date", value=pd.to_datetime("2025-08-07"))
 
 # Format dates for SQL parameters
-trade_date_str = trade_date.strftime('%Y-%m-%d') if hasattr(trade_date, 'strftime') else str(trade_date)
+start_date_str = trade_date_range[0].strftime('%Y-%m-%d')
+end_date_str = trade_date_range[1].strftime('%Y-%m-%d')
 expiry_date_str = expiry_date.strftime('%Y-%m-%d') if hasattr(expiry_date, 'strftime') else str(expiry_date)
 
 params = {
-    "trade_date": trade_date_str,
+    "start_date": start_date_str,
+    "end_date": end_date_str,
     "symbol": symbol,
     "expiry_date": expiry_date_str
 }
@@ -159,13 +165,13 @@ params = {
 st.write("Query Parameters:", params)
 
 # ------------------------------
-# Load data from DB
+# Load data from DB with date range filter
 # ------------------------------
 query = """
 SELECT trade_date, timestamp, symbol, strike_price, option_type, expiry_date,
        open_interest, oi_change_pct, vwap, close, volume, iv, price_change
 FROM option_3min_ohlc
-WHERE trade_date = :trade_date
+WHERE trade_date BETWEEN :start_date AND :end_date
 AND symbol = :symbol
 AND expiry_date = :expiry_date
 ORDER BY strike_price, timestamp
