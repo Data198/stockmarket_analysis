@@ -3,7 +3,9 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from urllib.parse import quote
 
+# ------------------------------
 # DB Connection
+# ------------------------------
 user = st.secrets["postgres"]["user"]
 password = quote(st.secrets["postgres"]["password"])
 host = st.secrets["postgres"]["host"]
@@ -11,6 +13,9 @@ port = st.secrets["postgres"]["port"]
 db = st.secrets["postgres"]["database"]
 engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}")
 
+# ------------------------------
+# Function: Generate Intraday Trades Based on 40% Move from First Candle Close
+# ------------------------------
 def generate_intraday_trades(df):
     df = df.sort_values(by=['strike_price', 'option_type', 'timestamp']).copy()
     trades = []
@@ -19,38 +24,26 @@ def generate_intraday_trades(df):
     first_candle_close_time = market_open_time + pd.Timedelta(minutes=3)  # 9:18 AM
     market_close_time = pd.to_datetime(df['timestamp'].dt.date.min().strftime('%Y-%m-%d') + ' 15:15:00')
 
-    # Track if PE and CE trades taken (max 1 each)
     pe_trade_taken = False
     ce_trade_taken = False
 
-    # Group by strike and option_type (CE/PE)
     for (strike, opt_type), group in df.groupby(['strike_price', 'option_type']):
         group = group.reset_index(drop=True)
 
-        # Get first 3-min candle (timestamp >= 9:18)
         first_candle = group[group['timestamp'] >= first_candle_close_time].head(1)
         if first_candle.empty:
             continue
 
-        high = first_candle.iloc[0]['high'] if 'high' in first_candle.columns else first_candle.iloc[0]['close']
-        low = first_candle.iloc[0]['low'] if 'low' in first_candle.columns else first_candle.iloc[0]['close']
+        first_close = first_candle.iloc[0]['close']
 
-        # Calculate 40% move levels
-        range_ = high - low
-        long_pe_trigger = low + 0.40 * range_
-        long_ce_trigger = high - 0.40 * range_
+        long_pe_trigger = first_close * 1.40  # 40% above first close
+        long_ce_trigger = first_close * 0.60  # 40% below first close
 
-        # Only proceed if option_type matches trade type
-        # PE trade triggers on price hitting long_pe_trigger (only for PE)
-        # CE trade triggers on price hitting long_ce_trigger (only for CE)
-
-        # Skip if trade already taken for this option type
         if opt_type == 'PE' and pe_trade_taken:
             continue
         if opt_type == 'CE' and ce_trade_taken:
             continue
 
-        # Scan forward after first candle close
         for i, row in group.iterrows():
             current_time = row['timestamp']
             if current_time < first_candle_close_time or current_time > market_close_time:
@@ -58,15 +51,12 @@ def generate_intraday_trades(df):
 
             price = row['close']
 
-            # Check trigger hit based on option type
             if opt_type == 'PE':
-                # Price must hit or cross long_pe_trigger from below
                 if price >= long_pe_trigger:
                     entry_price = price
-                    stop_loss = entry_price * (1 - 0.20)  # 20% below entry
-                    target = entry_price * (1 + 0.35)     # 35% above entry
+                    stop_loss = entry_price * 0.80  # 20% below entry
+                    target = entry_price * 1.35     # 35% above entry
 
-                    # Find exit
                     exit_price, exit_time = None, None
                     for j in range(i+1, len(group)):
                         future_price = group.loc[j, 'close']
@@ -88,7 +78,7 @@ def generate_intraday_trades(df):
                         exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
                         exit_time = market_close_time
 
-                    pnl = exit_price - entry_price  # Long trade PnL
+                    pnl = exit_price - entry_price
 
                     trades.append({
                         'strike_price': strike,
@@ -103,16 +93,14 @@ def generate_intraday_trades(df):
                         'pnl': pnl
                     })
                     pe_trade_taken = True
-                    break  # Only one PE trade per day
+                    break
 
             elif opt_type == 'CE':
-                # Price must hit or cross long_ce_trigger from above
                 if price <= long_ce_trigger:
                     entry_price = price
-                    stop_loss = entry_price * (1 - 0.20)  # 20% below entry
-                    target = entry_price * (1 + 0.35)     # 35% above entry
+                    stop_loss = entry_price * 0.80  # 20% below entry
+                    target = entry_price * 1.35     # 35% above entry
 
-                    # Find exit
                     exit_price, exit_time = None, None
                     for j in range(i+1, len(group)):
                         future_price = group.loc[j, 'close']
@@ -134,7 +122,7 @@ def generate_intraday_trades(df):
                         exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
                         exit_time = market_close_time
 
-                    pnl = exit_price - entry_price  # Long trade PnL
+                    pnl = exit_price - entry_price
 
                     trades.append({
                         'strike_price': strike,
@@ -149,23 +137,24 @@ def generate_intraday_trades(df):
                         'pnl': pnl
                     })
                     ce_trade_taken = True
-                    break  # Only one CE trade per day
+                    break
 
-        # Stop if both trades taken
         if pe_trade_taken and ce_trade_taken:
             break
 
     return pd.DataFrame(trades)
 
+# ------------------------------
 # Streamlit UI
+# ------------------------------
 st.title("Intraday 40% Premium Trade Generator (PE & CE)")
 
 trade_date_range = st.date_input("Select Trade Date Range",
-                                value=(pd.to_datetime("2025-08-01"), pd.to_datetime("2025-08-31")),
+                                value=(pd.to_datetime("2025-07-25"), pd.to_datetime("2025-07-31")),
                                 help="Select start and end date")
 
 symbol = st.text_input("Enter Symbol", value="NIFTY")
-expiry_date = st.date_input("Select Expiry Date", value=pd.to_datetime("2025-08-07"))
+expiry_date = st.date_input("Select Expiry Date", value=pd.to_datetime("2025-07-31"))
 
 start_date_str = trade_date_range[0].strftime('%Y-%m-%d')
 end_date_str = trade_date_range[1].strftime('%Y-%m-%d')
@@ -182,8 +171,7 @@ st.write("Query Parameters:", params)
 
 query = """
 SELECT trade_date, timestamp, symbol, strike_price, option_type, expiry_date,
-       open_interest, oi_change_pct, vwap, close, volume, iv, price_change,
-       high, low
+       open_interest, oi_change_pct, vwap, close, volume, iv, price_change
 FROM option_3min_ohlc
 WHERE trade_date BETWEEN :start_date AND :end_date
 AND symbol = :symbol
@@ -202,7 +190,6 @@ if df.empty:
     st.warning("No data found for the selected parameters.")
     st.stop()
 
-# Convert timestamp to datetime if not already
 df['timestamp'] = pd.to_datetime(df['timestamp'])
 
 df_trades = generate_intraday_trades(df)
