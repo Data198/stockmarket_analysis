@@ -14,9 +14,9 @@ db = st.secrets["postgres"]["database"]
 engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}")
 
 # ------------------------------
-# Function: Test 40% Intraday Reversal Post First Candle
+# Function: Test 40% Intraday Reversal Using First Candle Close as Base
 # ------------------------------
-def test_40pct_reversal_post_first_candle(df, price_col='close', low_col='low', high_col='high', time_col='timestamp', strike_col='strike_price'):
+def test_40pct_reversal_post_first_candle(df, price_col='close', time_col='timestamp', strike_col='strike_price'):
     df = df.sort_values(by=[strike_col, time_col]).copy()
     df['hit_upper_threshold'] = False
     df['hit_lower_threshold'] = False
@@ -33,34 +33,32 @@ def test_40pct_reversal_post_first_candle(df, price_col='close', low_col='low', 
             results.append(group)
             continue
 
-        # First candle low and high as base
-        first_candle = group.iloc[0]
-        base_low = first_candle[low_col]
-        base_high = first_candle[high_col]
+        # Use first candle's close as base price for thresholds
+        first_close = group.loc[0, price_col]
 
-        upper_threshold = base_low + 0.40 * base_low
-        lower_threshold = base_high - 0.40 * base_high
+        upper_threshold = first_close + 0.40 * first_close
+        lower_threshold = first_close - 0.40 * first_close
 
         for i, row in group.iterrows():
             if i == 0:
-                continue  # Skip first candle
+                continue  # skip first candle
 
             price = row[price_col]
 
             # Check upward threshold hit
             if price >= upper_threshold:
                 group.at[i, 'hit_upper_threshold'] = True
-                # Check reversal: price falls back by 10% of base_low in next 5 bars
+                # Check reversal: price falls back by 10% of first_close within next 5 intervals
                 window = group.iloc[i+1:i+1+reversal_window]
-                if (window[price_col] <= (price - 0.10 * base_low)).any():
+                if (window[price_col] <= (price - 0.10 * first_close)).any():
                     group.at[i, 'reversal_after_threshold'] = True
 
             # Check downward threshold hit
             elif price <= lower_threshold:
                 group.at[i, 'hit_lower_threshold'] = True
-                # Check reversal: price rises by 10% of base_high in next 5 bars
+                # Check reversal: price rises by 10% of first_close within next 5 intervals
                 window = group.iloc[i+1:i+1+reversal_window]
-                if (window[price_col] >= (price + 0.10 * base_high)).any():
+                if (window[price_col] >= (price + 0.10 * first_close)).any():
                     group.at[i, 'reversal_after_threshold'] = True
 
         results.append(group)
@@ -70,13 +68,13 @@ def test_40pct_reversal_post_first_candle(df, price_col='close', low_col='low', 
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.title("Intraday 40% Premium Reversal Tester (Post First Candle Logic)")
+st.title("Intraday 40% Premium Reversal Tester (First Candle Close Base)")
 
 trade_date = st.date_input("Select Trade Date", value=pd.to_datetime("2025-08-01"))
 symbol = st.text_input("Enter Symbol", value="NIFTY")
 expiry_date = st.date_input("Select Expiry Date", value=pd.to_datetime("2025-08-07"))
 
-# Format dates as strings for SQL query parameters
+# Format dates for SQL parameters
 trade_date_str = trade_date.strftime('%Y-%m-%d') if hasattr(trade_date, 'strftime') else str(trade_date)
 expiry_date_str = expiry_date.strftime('%Y-%m-%d') if hasattr(expiry_date, 'strftime') else str(expiry_date)
 
@@ -86,7 +84,6 @@ params = {
     "expiry_date": expiry_date_str
 }
 
-# Debug print
 st.write("Query Parameters:", params)
 
 # ------------------------------
@@ -94,7 +91,7 @@ st.write("Query Parameters:", params)
 # ------------------------------
 query = """
 SELECT trade_date, timestamp, symbol, strike_price, option_type, expiry_date,
-       open_interest, oi_change_pct, vwap, close, volume, iv, price_change, low, high
+       open_interest, oi_change_pct, vwap, close, volume, iv, price_change
 FROM option_3min_ohlc
 WHERE trade_date = :trade_date
 AND symbol = :symbol
@@ -117,8 +114,8 @@ if df.empty:
 df_result = test_40pct_reversal_post_first_candle(df)
 
 # Display sample results
-st.markdown("### Sample of Test Results")
-st.dataframe(df_result[['timestamp', 'strike_price', 'close', 'low', 'high', 
+st.markdown("### Sample Test Results")
+st.dataframe(df_result[['timestamp', 'strike_price', 'close',
                         'hit_upper_threshold', 'hit_lower_threshold', 'reversal_after_threshold']].head(50))
 
 # Summary statistics
