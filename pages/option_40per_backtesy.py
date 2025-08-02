@@ -130,14 +130,22 @@ if df.empty:
 # Run the 40% reversal test
 df_result = test_40pct_reversal_post_first_candle(df)
 
-# Display sample results
-st.markdown("### Sample Test Results")
-st.dataframe(df_result[['timestamp', 'strike_price', 'close',
-                        'hit_upper_threshold', 'hit_lower_threshold', 'reversal_after_threshold']].head(50))
+# Filter to show only rows where threshold was hit (upper or lower)
+filtered_df = df_result[(df_result['hit_upper_threshold'] | df_result['hit_lower_threshold'])]
+
+st.markdown("### Sample Test Results (Only Threshold Hits)")
+st.dataframe(filtered_df[['timestamp', 'strike_price', 'close',
+                          'hit_upper_threshold', 'hit_lower_threshold', 'reversal_after_threshold']].head(50))
+
+# Optional: Uncomment below to show only reversals after threshold hits
+# reversal_df = df_result[df_result['reversal_after_threshold']]
+# st.markdown("### Sample Test Results (Only Reversals After Threshold)")
+# st.dataframe(reversal_df[['timestamp', 'strike_price', 'close',
+#                          'hit_upper_threshold', 'hit_lower_threshold', 'reversal_after_threshold']].head(50))
 
 # Summary statistics
-total_hits = df_result[(df_result['hit_upper_threshold'] | df_result['hit_lower_threshold'])].shape[0]
-total_reversals = df_result[df_result['reversal_after_threshold']].shape[0]
+total_hits = filtered_df.shape[0]
+total_reversals = filtered_df[filtered_df['reversal_after_threshold']].shape[0]
 
 st.markdown(f"**Total 40% threshold hits:** {total_hits}")
 st.markdown(f"**Reversals after threshold hits:** {total_reversals}")
