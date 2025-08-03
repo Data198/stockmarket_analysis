@@ -1,9 +1,9 @@
-import pandas as pd
 import streamlit as st
+import pandas as pd
 from sqlalchemy import create_engine, text
 from urllib.parse import quote
 
-# DB Connection - your existing secrets usage
+# DB Connection
 user = st.secrets["postgres"]["user"]
 password = quote(st.secrets["postgres"]["password"])
 host = st.secrets["postgres"]["host"]
@@ -41,21 +41,17 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
 
     trades = []
 
-    # Group by strike, option type, and trade_date for correct intraday analysis
     grouped = df.groupby(['strike_price', 'option_type', 'trade_date'])
 
     for (strike, opt_type, trade_date), group in grouped:
         group = group.reset_index(drop=True)
 
-        # Define market times per trade_date
         market_open = pd.to_datetime(f"{trade_date} 09:15:00")
         first_candle_close_time = market_open + pd.Timedelta(minutes=3)
         market_close_time = pd.to_datetime(f"{trade_date} 15:15:00")
 
-        # Find first candle after market open + 3 min
         first_candle = group[group['timestamp'] >= first_candle_close_time].head(1)
         if first_candle.empty:
-            st.write(f"No first candle for strike {strike}, {opt_type} on {trade_date}")
             continue
 
         high = first_candle.iloc[0]['high']
@@ -154,3 +150,33 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
                 })
 
     return pd.DataFrame(trades)
+
+# Streamlit UI
+st.title("40% Premium Intraday Reversal Backtest")
+
+with st.sidebar:
+    symbol = st.text_input("Symbol", value="NIFTY")
+    expiry_date = st.date_input("Expiry Date", value=pd.to_datetime("2025-08-07"))
+    start_date = st.date_input("Start Date", value=pd.to_datetime("2025-07-01"))
+    end_date = st.date_input("End Date", value=pd.to_datetime("2025-07-31"))
+
+    if start_date > end_date:
+        st.error("Start Date must be before End Date")
+        st.stop()
+
+if st.button("Run Backtest"):
+    trades_df = backtest_40pct_strategy(start_date, end_date, symbol, expiry_date)
+
+    if trades_df.empty:
+        st.warning("No trades generated for selected parameters.")
+    else:
+        st.markdown("### Trade Details")
+        st.dataframe(trades_df)
+
+        total_trades = len(trades_df)
+        total_pnl = trades_df['pnl'].sum()
+        win_rate = (trades_df['pnl'] > 0).mean() * 100
+
+        st.markdown(f"**Total Trades:** {total_trades}")
+        st.markdown(f"**Total P&L:** {total_pnl:.2f}")
+        st.markdown(f"**Win Rate:** {win_rate:.2f}%")
