@@ -1,11 +1,9 @@
-import streamlit as st
 import pandas as pd
+import streamlit as st
 from sqlalchemy import create_engine, text
 from urllib.parse import quote
 
-# ------------------------------
-# DB Connection using Streamlit secrets
-# ------------------------------
+# DB Connection - your existing secrets usage
 user = st.secrets["postgres"]["user"]
 password = quote(st.secrets["postgres"]["password"])
 host = st.secrets["postgres"]["host"]
@@ -39,21 +37,25 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
         return pd.DataFrame()
 
     df['timestamp'] = pd.to_datetime(df['timestamp'])
-    market_open = pd.to_datetime(df['timestamp'].dt.date.min().strftime('%Y-%m-%d') + ' 09:15:00')
-    first_candle_close_time = market_open + pd.Timedelta(minutes=3)
-    market_close_time = pd.to_datetime(df['timestamp'].dt.date.min().strftime('%Y-%m-%d') + ' 15:15:00')
+    df['trade_date'] = df['timestamp'].dt.date
 
     trades = []
-    pe_trade_taken = False
-    ce_trade_taken = False
 
-    for (strike, opt_type), group in df.groupby(['strike_price', 'option_type']):
+    # Group by strike, option type, and trade_date for correct intraday analysis
+    grouped = df.groupby(['strike_price', 'option_type', 'trade_date'])
+
+    for (strike, opt_type, trade_date), group in grouped:
         group = group.reset_index(drop=True)
 
-        # Fix: select first candle at or after first candle close time
+        # Define market times per trade_date
+        market_open = pd.to_datetime(f"{trade_date} 09:15:00")
+        first_candle_close_time = market_open + pd.Timedelta(minutes=3)
+        market_close_time = pd.to_datetime(f"{trade_date} 15:15:00")
+
+        # Find first candle after market open + 3 min
         first_candle = group[group['timestamp'] >= first_candle_close_time].head(1)
         if first_candle.empty:
-            print(f"No first candle found for strike {strike} {opt_type}")
+            st.write(f"No first candle for strike {strike}, {opt_type} on {trade_date}")
             continue
 
         high = first_candle.iloc[0]['high']
@@ -62,111 +64,93 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
         long_pe_trigger = low + 0.40 * (high - low)
         long_ce_trigger = high - 0.40 * (high - low)
 
-        print(f"Strike: {strike}, Option: {opt_type}, First candle high: {high}, low: {low}")
-        print(f"PE trigger: {long_pe_trigger}, CE trigger: {long_ce_trigger}")
-
-        if opt_type == 'PE' and pe_trade_taken:
-            continue
-        if opt_type == 'CE' and ce_trade_taken:
-            continue
-
         for i, row in group.iterrows():
             current_time = row['timestamp']
             if current_time < first_candle_close_time or current_time > market_close_time:
                 continue
 
             price = row['close']
-            print(f"Time: {current_time}, Price: {price}")
 
-            if opt_type == 'PE':
-                if price >= long_pe_trigger:
-                    entry_price = price
-                    stop_loss = entry_price * 0.80
-                    target = entry_price * 1.35
+            if opt_type == 'PE' and price >= long_pe_trigger:
+                entry_price = price
+                stop_loss = entry_price * 0.80
+                target = entry_price * 1.35
 
-                    exit_price, exit_time = None, None
-                    for j in range(i+1, len(group)):
-                        future_price = group.loc[j, 'close']
-                        future_time = group.loc[j, 'timestamp']
+                exit_price, exit_time = None, None
+                for j in range(i+1, len(group)):
+                    future_price = group.loc[j, 'close']
+                    future_time = group.loc[j, 'timestamp']
 
-                        if future_time > market_close_time:
-                            break
+                    if future_time > market_close_time:
+                        break
 
-                        if future_price <= stop_loss:
-                            exit_price = stop_loss
-                            exit_time = future_time
-                            break
-                        elif future_price >= target:
-                            exit_price = target
-                            exit_time = future_time
-                            break
+                    if future_price <= stop_loss:
+                        exit_price = stop_loss
+                        exit_time = future_time
+                        break
+                    elif future_price >= target:
+                        exit_price = target
+                        exit_time = future_time
+                        break
 
-                    if exit_price is None:
-                        exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
-                        exit_time = market_close_time
+                if exit_price is None:
+                    exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
+                    exit_time = market_close_time
 
-                    pnl = exit_price - entry_price
+                pnl = exit_price - entry_price
 
-                    trades.append({
-                        'strike_price': strike,
-                        'option_type': opt_type,
-                        'direction': 'LONG',
-                        'entry_time': current_time,
-                        'entry_price': entry_price,
-                        'stop_loss': stop_loss,
-                        'target': target,
-                        'exit_time': exit_time,
-                        'exit_price': exit_price,
-                        'pnl': pnl
-                    })
-                    pe_trade_taken = True
-                    break
+                trades.append({
+                    'strike_price': strike,
+                    'option_type': opt_type,
+                    'direction': 'LONG',
+                    'entry_time': current_time,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'target': target,
+                    'exit_time': exit_time,
+                    'exit_price': exit_price,
+                    'pnl': pnl
+                })
 
-            elif opt_type == 'CE':
-                if price <= long_ce_trigger:
-                    entry_price = price
-                    stop_loss = entry_price * 0.80
-                    target = entry_price * 1.35
+            elif opt_type == 'CE' and price <= long_ce_trigger:
+                entry_price = price
+                stop_loss = entry_price * 0.80
+                target = entry_price * 1.35
 
-                    exit_price, exit_time = None, None
-                    for j in range(i+1, len(group)):
-                        future_price = group.loc[j, 'close']
-                        future_time = group.loc[j, 'timestamp']
+                exit_price, exit_time = None, None
+                for j in range(i+1, len(group)):
+                    future_price = group.loc[j, 'close']
+                    future_time = group.loc[j, 'timestamp']
 
-                        if future_time > market_close_time:
-                            break
+                    if future_time > market_close_time:
+                        break
 
-                        if future_price <= stop_loss:
-                            exit_price = stop_loss
-                            exit_time = future_time
-                            break
-                        elif future_price >= target:
-                            exit_price = target
-                            exit_time = future_time
-                            break
+                    if future_price <= stop_loss:
+                        exit_price = stop_loss
+                        exit_time = future_time
+                        break
+                    elif future_price >= target:
+                        exit_price = target
+                        exit_time = future_time
+                        break
 
-                    if exit_price is None:
-                        exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
-                        exit_time = market_close_time
+                if exit_price is None:
+                    exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
+                    exit_time = market_close_time
 
-                    pnl = exit_price - entry_price
+                pnl = exit_price - entry_price
 
-                    trades.append({
-                        'strike_price': strike,
-                        'option_type': opt_type,
-                        'direction': 'LONG',
-                        'entry_time': current_time,
-                        'entry_price': entry_price,
-                        'stop_loss': stop_loss,
-                        'target': target,
-                        'exit_time': exit_time,
-                        'exit_price': exit_price,
-                        'pnl': pnl
-                    })
-                    ce_trade_taken = True
-                    break
-
-        if pe_trade_taken and ce_trade_taken:
-            break
+                trades.append({
+                    'strike_price': strike,
+                    'option_type': opt_type,
+                    'direction': 'LONG',
+                    'entry_time': current_time,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'target': target,
+                    'exit_time': exit_time,
+                    'exit_price': exit_price,
+                    'pnl': pnl
+                })
 
     return pd.DataFrame(trades)
