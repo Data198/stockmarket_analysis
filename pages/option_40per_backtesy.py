@@ -63,7 +63,6 @@ with st.sidebar:
     start_date = st.date_input("Start Date", value=pd.to_datetime("2025-07-01"))
     end_date = st.date_input("End Date", value=pd.to_datetime("2025-07-31"))
 
-    # Fetch strikes for symbol & option type & date range to populate multiselect
     strikes_query = """
     SELECT DISTINCT strike_price
     FROM option_3min_ohlc_kite
@@ -92,15 +91,15 @@ if not selected_strikes:
     st.warning("Please select at least one strike.")
     st.stop()
 
-# Build tradingsymbol filter for strikes
-strikes_filter = "','".join(selected_strikes)
-strike_pattern = f"({strikes_filter})"
+# Prepare parameters for the IN clause dynamically
+strike_params = {f"strike_{i}": strike for i, strike in enumerate(selected_strikes)}
+placeholders = ", ".join(f":strike_{i}" for i in range(len(selected_strikes)))
 
 query = f"""
 SELECT tradingsymbol, timestamp, close
 FROM option_3min_ohlc_kite
 WHERE tradingsymbol LIKE :symbol_pattern
-AND CAST(strike_price AS TEXT) IN {strike_pattern}
+AND CAST(strike_price AS TEXT) IN ({placeholders})
 AND timestamp::date BETWEEN :start_date AND :end_date
 ORDER BY tradingsymbol, timestamp
 """
@@ -109,6 +108,7 @@ params = {
     "symbol_pattern": f"{symbol}%{option_type}",
     "start_date": start_date,
     "end_date": end_date,
+    **strike_params
 }
 
 with engine.connect() as conn:
