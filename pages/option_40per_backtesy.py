@@ -50,8 +50,10 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
     for (strike, opt_type), group in df.groupby(['strike_price', 'option_type']):
         group = group.reset_index(drop=True)
 
-        first_candle = group[group['timestamp'] == first_candle_close_time]
+        # Fix: select first candle at or after first candle close time
+        first_candle = group[group['timestamp'] >= first_candle_close_time].head(1)
         if first_candle.empty:
+            print(f"No first candle found for strike {strike} {opt_type}")
             continue
 
         high = first_candle.iloc[0]['high']
@@ -59,6 +61,9 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
 
         long_pe_trigger = low + 0.40 * (high - low)
         long_ce_trigger = high - 0.40 * (high - low)
+
+        print(f"Strike: {strike}, Option: {opt_type}, First candle high: {high}, low: {low}")
+        print(f"PE trigger: {long_pe_trigger}, CE trigger: {long_ce_trigger}")
 
         if opt_type == 'PE' and pe_trade_taken:
             continue
@@ -71,6 +76,7 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
                 continue
 
             price = row['close']
+            print(f"Time: {current_time}, Price: {price}")
 
             if opt_type == 'PE':
                 if price >= long_pe_trigger:
