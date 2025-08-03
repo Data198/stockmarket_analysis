@@ -3,7 +3,9 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from urllib.parse import quote
 
-# DB Connection
+# ------------------------------
+# DB Connection using Streamlit secrets
+# ------------------------------
 user = st.secrets["postgres"]["user"]
 password = quote(st.secrets["postgres"]["password"])
 host = st.secrets["postgres"]["host"]
@@ -13,11 +15,11 @@ engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{
 
 def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
     query = """
-    SELECT trade_date, timestamp, symbol, strike_price, option_type, expiry_date,
+    SELECT timestamp, tradingsymbol, strike_price, option_type, expiry_date,
            open, high, low, close, volume, oi
     FROM option_3min_ohlc_kite
-    WHERE trade_date BETWEEN :start_date AND :end_date
-      AND symbol = :symbol
+    WHERE timestamp::date BETWEEN :start_date AND :end_date
+      AND tradingsymbol LIKE :symbol_pattern
       AND expiry_date = :expiry_date
     ORDER BY strike_price, option_type, timestamp
     """
@@ -25,7 +27,7 @@ def backtest_40pct_strategy(start_date, end_date, symbol, expiry_date):
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "symbol": symbol,
+        "symbol_pattern": f"{symbol}%",
         "expiry_date": expiry_date
     }
 
