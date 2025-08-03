@@ -13,205 +13,122 @@ port = st.secrets["postgres"]["port"]
 db = st.secrets["postgres"]["database"]
 engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}")
 
-# ------------------------------
-# Function: Generate Intraday Trades Based on 40% Move from First Candle Close
-# ------------------------------
-def generate_intraday_trades(df):
-    df = df.sort_values(by=['strike_price', 'option_type', 'timestamp']).copy()
-    trades = []
+def backtest_40pct_reversal(df):
+    df = df.copy()
+    df['trade_date'] = df['timestamp'].dt.date
+    df.sort_values(['tradingsymbol', 'trade_date', 'timestamp'], inplace=True)
+    df['hit_upper_threshold'] = False
+    df['hit_lower_threshold'] = False
+    df['reversal_after_threshold'] = False
 
-    market_open_time = pd.to_datetime(df['timestamp'].dt.date.min().strftime('%Y-%m-%d') + ' 09:15:00')
-    first_candle_close_time = market_open_time + pd.Timedelta(minutes=3)  # 9:18 AM
-    market_close_time = pd.to_datetime(df['timestamp'].dt.date.min().strftime('%Y-%m-%d') + ' 15:15:00')
+    grouped = df.groupby(['tradingsymbol', 'trade_date'])
+    results = []
 
-    pe_trade_taken = False
-    ce_trade_taken = False
-
-    for (strike, opt_type), group in df.groupby(['strike_price', 'option_type']):
+    for (symbol, day), group in grouped:
         group = group.reset_index(drop=True)
-
-        first_candle = group[group['timestamp'] >= first_candle_close_time].head(1)
-        if first_candle.empty:
+        if group.empty:
             continue
 
-        first_close = first_candle.iloc[0]['close']
-
-        long_pe_trigger = first_close * 1.40  # 40% above first close
-        long_ce_trigger = first_close * 0.60  # 40% below first close
-
-        if opt_type == 'PE' and pe_trade_taken:
-            continue
-        if opt_type == 'CE' and ce_trade_taken:
-            continue
+        first_close = group.loc[0, 'close']
+        upper_threshold = first_close * 1.40
+        lower_threshold = first_close * 0.60
 
         for i, row in group.iterrows():
-            current_time = row['timestamp']
-            if current_time < first_candle_close_time or current_time > market_close_time:
+            if i == 0:
                 continue
 
             price = row['close']
 
-            if opt_type == 'PE':
-                if price >= long_pe_trigger:
-                    entry_price = price
-                    stop_loss = entry_price * 0.80  # 20% below entry
-                    target = entry_price * 1.35     # 35% above entry
+            if price >= upper_threshold:
+                group.at[i, 'hit_upper_threshold'] = True
+                window = group.iloc[i+1:i+6]
+                if (window['close'] <= price * 0.90).any():
+                    group.at[i, 'reversal_after_threshold'] = True
 
-                    exit_price, exit_time = None, None
-                    for j in range(i+1, len(group)):
-                        future_price = group.loc[j, 'close']
-                        future_time = group.loc[j, 'timestamp']
+            elif price <= lower_threshold:
+                group.at[i, 'hit_lower_threshold'] = True
+                window = group.iloc[i+1:i+6]
+                if (window['close'] >= price * 1.10).any():
+                    group.at[i, 'reversal_after_threshold'] = True
 
-                        if future_time > market_close_time:
-                            break
+        results.append(group)
 
-                        if future_price <= stop_loss:
-                            exit_price = stop_loss
-                            exit_time = future_time
-                            break
-                        elif future_price >= target:
-                            exit_price = target
-                            exit_time = future_time
-                            break
+    return pd.concat(results, ignore_index=True)
 
-                    if exit_price is None:
-                        exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
-                        exit_time = market_close_time
+st.title("40% Premium Intraday Reversal Backtest")
 
-                    pnl = exit_price - entry_price
+with st.sidebar:
+    symbol = st.text_input("Symbol", value="NIFTY")
+    option_type = st.selectbox("Option Type", ["CE", "PE"])
+    start_date = st.date_input("Start Date", value=pd.to_datetime("2025-07-01"))
+    end_date = st.date_input("End Date", value=pd.to_datetime("2025-07-31"))
 
-                    trades.append({
-                        'strike_price': strike,
-                        'option_type': opt_type,
-                        'direction': 'LONG',
-                        'entry_time': current_time,
-                        'entry_price': entry_price,
-                        'stop_loss': stop_loss,
-                        'target': target,
-                        'exit_time': exit_time,
-                        'exit_price': exit_price,
-                        'pnl': pnl
-                    })
-                    pe_trade_taken = True
-                    break
+    # Fetch strikes for symbol & option type & date range to populate multiselect
+    strikes_query = """
+    SELECT DISTINCT strike_price
+    FROM option_3min_ohlc_kite
+    WHERE tradingsymbol LIKE :pattern
+      AND timestamp::date BETWEEN :start_date AND :end_date
+    ORDER BY strike_price
+    """
+    pattern = f"{symbol}%{option_type}"
 
-            elif opt_type == 'CE':
-                if price <= long_ce_trigger:
-                    entry_price = price
-                    stop_loss = entry_price * 0.80  # 20% below entry
-                    target = entry_price * 1.35     # 35% above entry
-
-                    exit_price, exit_time = None, None
-                    for j in range(i+1, len(group)):
-                        future_price = group.loc[j, 'close']
-                        future_time = group.loc[j, 'timestamp']
-
-                        if future_time > market_close_time:
-                            break
-
-                        if future_price <= stop_loss:
-                            exit_price = stop_loss
-                            exit_time = future_time
-                            break
-                        elif future_price >= target:
-                            exit_price = target
-                            exit_time = future_time
-                            break
-
-                    if exit_price is None:
-                        exit_price = group[group['timestamp'] <= market_close_time].iloc[-1]['close']
-                        exit_time = market_close_time
-
-                    pnl = exit_price - entry_price
-
-                    trades.append({
-                        'strike_price': strike,
-                        'option_type': opt_type,
-                        'direction': 'LONG',
-                        'entry_time': current_time,
-                        'entry_price': entry_price,
-                        'stop_loss': stop_loss,
-                        'target': target,
-                        'exit_time': exit_time,
-                        'exit_price': exit_price,
-                        'pnl': pnl
-                    })
-                    ce_trade_taken = True
-                    break
-
-        if pe_trade_taken and ce_trade_taken:
-            break
-
-    return pd.DataFrame(trades)
-
-# ------------------------------
-# Streamlit UI
-# ------------------------------
-st.title("Intraday 40% Premium Trade Generator (PE & CE)")
-
-trade_date_range = st.date_input("Select Trade Date Range",
-                                value=(pd.to_datetime("2025-07-25"), pd.to_datetime("2025-07-31")),
-                                help="Select start and end date")
-
-symbol = st.text_input("Enter Symbol", value="NIFTY")
-expiry_date = st.date_input("Select Expiry Date", value=pd.to_datetime("2025-07-31"))
-
-start_date_str = trade_date_range[0].strftime('%Y-%m-%d')
-end_date_str = trade_date_range[1].strftime('%Y-%m-%d')
-expiry_date_str = expiry_date.strftime('%Y-%m-%d')
-
-params = {
-    "start_date": start_date_str,
-    "end_date": end_date_str,
-    "symbol": symbol,
-    "expiry_date": expiry_date_str
-}
-
-st.write("Query Parameters:", params)
-
-query = """
-SELECT trade_date, timestamp, symbol, strike_price, option_type, expiry_date,
-       open_interest, oi_change_pct, vwap, close, volume, iv, price_change
-FROM option_3min_ohlc
-WHERE trade_date BETWEEN :start_date AND :end_date
-AND symbol = :symbol
-AND expiry_date = :expiry_date
-ORDER BY strike_price, option_type, timestamp
-"""
-
-try:
     with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn, params=params)
-except Exception as e:
-    st.error(f"Error loading data from database: {e}")
+        strikes_df = pd.read_sql(text(strikes_query), conn, params={
+            "pattern": pattern,
+            "start_date": start_date,
+            "end_date": end_date,
+        })
+
+    strikes_list = strikes_df['strike_price'].dropna().sort_values().astype(int).astype(str).tolist()
+
+    selected_strikes = st.multiselect(
+        "Select Strikes",
+        options=strikes_list,
+        default=strikes_list[:5]
+    )
+
+if not selected_strikes:
+    st.warning("Please select at least one strike.")
     st.stop()
 
+# Build tradingsymbol filter for strikes
+strikes_filter = "','".join(selected_strikes)
+strike_pattern = f"({strikes_filter})"
+
+query = f"""
+SELECT tradingsymbol, timestamp, close
+FROM option_3min_ohlc_kite
+WHERE tradingsymbol LIKE :symbol_pattern
+AND CAST(strike_price AS TEXT) IN {strike_pattern}
+AND timestamp::date BETWEEN :start_date AND :end_date
+ORDER BY tradingsymbol, timestamp
+"""
+
+params = {
+    "symbol_pattern": f"{symbol}%{option_type}",
+    "start_date": start_date,
+    "end_date": end_date,
+}
+
+with engine.connect() as conn:
+    df = pd.read_sql(text(query), conn, params=params)
+
 if df.empty:
-    st.warning("No data found for the selected parameters.")
+    st.warning("No data found for given parameters")
     st.stop()
 
 df['timestamp'] = pd.to_datetime(df['timestamp'])
 
-df_trades = generate_intraday_trades(df)
+result_df = backtest_40pct_reversal(df)
 
-if df_trades.empty:
-    st.warning("No trades generated for the selected parameters.")
-else:
-    st.markdown("### Generated Trades")
-    st.dataframe(df_trades)
+st.markdown("### Sample Results")
+st.dataframe(result_df.head(50))
 
-    # Monthly summary
-    df_trades['entry_time'] = pd.to_datetime(df_trades['entry_time'])
-    df_trades['year_month'] = df_trades['entry_time'].dt.to_period('M')
+total_hits = result_df[(result_df['hit_upper_threshold'] | result_df['hit_lower_threshold'])].shape[0]
+total_reversals = result_df[result_df['reversal_after_threshold']].shape[0]
+reversal_pct = (total_reversals / total_hits * 100) if total_hits else 0
 
-    monthly_summary = df_trades.groupby('year_month').agg(
-        total_trades=('pnl', 'count'),
-        total_pnl=('pnl', 'sum'),
-        avg_pnl=('pnl', 'mean'),
-        winning_trades=('pnl', lambda x: (x > 0).sum())
-    ).reset_index()
-
-    monthly_summary['win_rate_pct'] = 100 * monthly_summary['winning_trades'] / monthly_summary['total_trades']
-
-    st.markdown("### Monthly Consolidated Trade Summary")
-    st.dataframe(monthly_summary)
+st.markdown(f"**Total Threshold Hits:** {total_hits}")
+st.markdown(f"**Reversals After Hits:** {total_reversals}")
+st.markdown(f"**Reversal Percentage:** {reversal_pct:.2f}%")
