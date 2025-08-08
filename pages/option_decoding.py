@@ -72,11 +72,11 @@ selected_date = st.sidebar.selectbox("Select Trade Date", trade_dates)
 @st.cache_data(show_spinner=False)
 def get_symbols(trade_date):
     query = text("SELECT DISTINCT symbol FROM option_3min_ohlc WHERE trade_date = :trade_date ORDER BY symbol")
-    df_syms = pd.read_sql(query, engine, params={"trade_date": selected_date})
-    st.write(f"Symbols found for {trade_date}: {df_syms['symbol'].tolist()}")  # Debug print
+    df_syms = pd.read_sql(query, engine, params={"trade_date": trade_date})
     return df_syms['symbol'].tolist()
 
 symbols = get_symbols(selected_date)
+st.sidebar.write(f"Symbols found for {selected_date}: {symbols}")
 selected_symbol = st.sidebar.selectbox("Select Symbol", symbols)
 
 @st.cache_data(show_spinner=False)
@@ -86,10 +86,10 @@ def get_expiries(trade_date, symbol):
         WHERE trade_date = :trade_date AND symbol = :symbol ORDER BY expiry_date
     """)
     df_exp = pd.read_sql(query, engine, params={"trade_date": trade_date, "symbol": symbol})
-    st.write(f"Expiries for {symbol} on {trade_date}: {df_exp['expiry_date'].tolist()}")  # Debug print
     return df_exp['expiry_date'].tolist()
 
 expiries = get_expiries(selected_date, selected_symbol)
+st.sidebar.write(f"Expiries for {selected_symbol} on {selected_date}: {expiries}")
 selected_expiry = st.sidebar.selectbox("Select Expiry Date", expiries)
 
 @st.cache_data(show_spinner=False)
@@ -100,10 +100,10 @@ def get_strikes(trade_date, symbol, expiry):
         ORDER BY strike_price
     """)
     df_strikes = pd.read_sql(query, engine, params={"trade_date": trade_date, "symbol": symbol, "expiry": expiry})
-    st.write(f"Strikes for {symbol} expiring on {expiry}: {df_strikes['strike_price'].tolist()}")  # Debug print
     return df_strikes['strike_price'].tolist()
 
 strikes = get_strikes(selected_date, selected_symbol, selected_expiry)
+st.sidebar.write(f"Strikes for {selected_symbol} expiring on {selected_expiry}: {strikes}")
 selected_strike = st.sidebar.selectbox("Select Strike Price", strikes)
 
 option_types = ['CE', 'PE']
@@ -112,7 +112,7 @@ selected_option_type = st.sidebar.selectbox("Select Option Type", option_types)
 @st.cache_data(show_spinner=False)
 def load_data(trade_date, symbol, expiry, strike, option_type):
     query = text("""
-        SELECT timestamp, close, open_interest, volume, price_change
+        SELECT timestamp, close, open_interest, volume
         FROM option_3min_ohlc
         WHERE trade_date = :trade_date
           AND symbol = :symbol
@@ -128,10 +128,10 @@ def load_data(trade_date, symbol, expiry, strike, option_type):
         "strike": strike,
         "option_type": option_type
     })
-    st.write(f"Loaded {len(df)} rows for selected filters.")  # Debug print
     return df
 
 df_data = load_data(selected_date, selected_symbol, selected_expiry, selected_strike, selected_option_type)
+st.write(f"Loaded {len(df_data)} rows for selected filters.")  # Debug print outside cached function
 
 if df_data.empty:
     st.warning("No data found for selected filters.")
