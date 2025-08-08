@@ -63,7 +63,6 @@ def interpret_oi_data_with_abnormal(df, k=2):
 # --- Streamlit UI ---
 st.title("Options 3-min OI & Volume Abnormality Analysis")
 
-# Fetch available trade_dates for selection
 @st.cache_data
 def get_trade_dates():
     query = "SELECT DISTINCT trade_date FROM option_3min_ohlc ORDER BY trade_date DESC"
@@ -73,7 +72,6 @@ def get_trade_dates():
 trade_dates = get_trade_dates()
 selected_date = st.sidebar.selectbox("Select Trade Date", trade_dates)
 
-# Fetch symbols for selected date
 @st.cache_data
 def get_symbols(trade_date):
     query = f"SELECT DISTINCT symbol FROM option_3min_ohlc WHERE trade_date = '{trade_date}' ORDER BY symbol"
@@ -83,7 +81,6 @@ def get_symbols(trade_date):
 symbols = get_symbols(selected_date)
 selected_symbol = st.sidebar.selectbox("Select Symbol", symbols)
 
-# Fetch expiry dates for selected filters
 @st.cache_data
 def get_expiries(trade_date, symbol):
     query = f"""
@@ -96,7 +93,6 @@ def get_expiries(trade_date, symbol):
 expiries = get_expiries(selected_date, selected_symbol)
 selected_expiry = st.sidebar.selectbox("Select Expiry Date", expiries)
 
-# Fetch strikes for selected filters
 @st.cache_data
 def get_strikes(trade_date, symbol, expiry):
     query = f"""
@@ -113,7 +109,6 @@ selected_strike = st.sidebar.selectbox("Select Strike Price", strikes)
 option_types = ['CE', 'PE']
 selected_option_type = st.sidebar.selectbox("Select Option Type", option_types)
 
-# Load data for selected filters
 @st.cache_data
 def load_data(trade_date, symbol, expiry, strike, option_type):
     query = f"""
