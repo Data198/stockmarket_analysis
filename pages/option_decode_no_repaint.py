@@ -4,9 +4,13 @@
 #   • Backtest (file upload) → sequential pass, no repaint
 #   • Live Mode (simulated poll loop) → append new bars, fire signals at bar close
 #
-# Optional: log each fired signal to PostgreSQL.
+# Features:
+#   • Fixed stop‑loss (default ₹20) with toggle to switch to dynamic WA-based SL
+#   • Optional PostgreSQL signal logging
+#   • Optional login gating (uses login_page.login(engine) if present)
 
 import time
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -14,15 +18,31 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Config
+# Page config
 # ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="OI Live (No Repaint)", layout="wide")
 st.title("🔴 OI Phase Engine — Live, No‑Repaint (Bar‑Close Signals)")
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Optional: import login if available
+# ──────────────────────────────────────────────────────────────────────────────
+def try_login(engine):
+    try:
+        from login_page import login
+        # Respect your app’s existing login flow if present
+        # Expected signature: login(engine) -> bool
+        ok = login(engine)
+        if not ok:
+            st.stop()
+    except Exception:
+        # If no login module exists, proceed without login
+        pass
+
+# ──────────────────────────────────────────────────────────────────────────────
 # DB (optional)
 # ──────────────────────────────────────────────────────────────────────────────
 def get_engine():
+    """Reads st.secrets['postgres'] and returns SQLAlchemy engine, else None."""
     try:
         from sqlalchemy import create_engine
         u = st.secrets["postgres"]["user"]
@@ -51,6 +71,7 @@ def ensure_signal_table(engine):
         wa_short_avg NUMERIC(18,6),
         long_pressure NUMERIC(18,6),
         short_pressure NUMERIC(18,6),
+        sl_type TEXT,
         params JSONB DEFAULT '{}'::jsonb -- thresholds snapshot
     );
     """
@@ -58,12 +79,15 @@ def ensure_signal_table(engine):
         con.execute(text(ddl))
 
 def log_signal(engine, row, meta):
-    if engine is None: return
+    if engine is None:
+        return
     from sqlalchemy import text
     q = text("""
         INSERT INTO oi_signals
-        (symbol, session_date, ts, side, entry, stop, target, class, wa_long_avg, wa_short_avg, long_pressure, short_pressure, params)
-        VALUES (:symbol, :session_date, :ts, :side, :entry, :stop, :target, :class, :wa_long_avg, :wa_short_avg, :long_pressure, :short_pressure, :params::jsonb)
+        (symbol, session_date, ts, side, entry, stop, target, class,
+         wa_long_avg, wa_short_avg, long_pressure, short_pressure, sl_type, params)
+        VALUES (:symbol, :session_date, :ts, :side, :entry, :stop, :target, :class,
+                :wa_long_avg, :wa_short_avg, :long_pressure, :short_pressure, :sl_type, :params::jsonb)
     """)
     with engine.begin() as con:
         con.execute(q, {
@@ -79,11 +103,12 @@ def log_signal(engine, row, meta):
             "wa_short_avg": row.get("wa_short_avg"),
             "long_pressure": row.get("long_pressure"),
             "short_pressure": row.get("short_pressure"),
+            "sl_type": row.get("sl_type"),
             "params": meta.get("params_json","{}"),
         })
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Parsing & helpers (no repaint: we’ll advance STATE sequentially)
+# Parsing & helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def parse_time_series(df: pd.DataFrame, date_hint: str | None = None) -> pd.DataFrame:
     cols = {str(c).strip().lower(): c for c in df.columns}
@@ -118,9 +143,11 @@ def parse_time_series(df: pd.DataFrame, date_hint: str | None = None) -> pd.Data
     return df
 
 def classify_from_changes(price_change, oi_change):
-    # SB/LB/SC/LU based only on current bar deltas
-    if price_change is None or oi_change is None: return None
-    if price_change == 0 or oi_change == 0: return None
+    """SB/LB/SC/LU based only on current bar deltas."""
+    if price_change is None or oi_change is None:
+        return None
+    if price_change == 0 or oi_change == 0:
+        return None
     if price_change > 0 and oi_change > 0: return "LB"
     if price_change < 0 and oi_change > 0: return "SB"
     if price_change > 0 and oi_change < 0: return "SC"
@@ -133,7 +160,8 @@ def classify_from_changes(price_change, oi_change):
 class EngineState:
     def __init__(self, price_thr_rupees, price_thr_pct, oi_thr_frac, oi_thr_abs, confirm_bars,
                  min_long_pressure, min_short_pressure, require_wa_cross,
-                 min_gap_minutes, max_per_side, rr, buffer):
+                 min_gap_minutes, max_per_side, rr, buffer,
+                 use_fixed_stop, fixed_stop):
         # thresholds
         self.price_thr_rupees = price_thr_rupees
         self.price_thr_pct    = price_thr_pct
@@ -149,6 +177,10 @@ class EngineState:
         self.max_per_side       = max_per_side
         self.rr                 = rr
         self.buffer             = buffer
+
+        # stop-loss config
+        self.use_fixed_stop = use_fixed_stop
+        self.fixed_stop = float(fixed_stop)
 
         # running state
         self.prev_close = None
@@ -174,7 +206,6 @@ class EngineState:
         self.count_short = 0
 
     def _meets_significance(self, close, oi):
-        # dynamic thresholds based on prev values
         if self.prev_close is None or self.prev_oi is None:
             return False
         pc = close - self.prev_close
@@ -184,7 +215,6 @@ class EngineState:
         return (abs(pc) >= dyn_price_thr) and (abs(oc) >= dyn_oi_thr)
 
     def _confirm_class(self, raw_class):
-        # returns confirmed class (no repaint: only present & past info)
         if raw_class is None:
             return self.prev_class
         if self.prev_class is None:
@@ -233,6 +263,7 @@ class EngineState:
     def _try_signal(self, ts, close, seg, long_pressure, short_pressure):
         # WA-only logic; spacing; cap max signals per side
         out = None
+
         # SHORT ▼ when longs hurting + bearish phase + price below WA long avg
         if (long_pressure is not None and long_pressure < self.min_long_pressure
             and seg in ("SB","LU") and not np.isnan(self.long_avg) and close < self.long_avg
@@ -249,18 +280,26 @@ class EngineState:
             spacing_ok = (self.last_signal_time_short is None) or (ts - self.last_signal_time_short >= self.min_gap)
 
             if wa_cross_ok and spacing_ok:
-                # stop above swing & WA long avg
-                stop = max(close, self.long_avg) + self.buffer
-                # using last few bars for high would be “live-ish”; but to avoid repaint, use only current info:
-                # we’ll still put SL above WA long avg for safety
-                risk = stop - close
+                # STOP: fixed or dynamic
+                if self.use_fixed_stop:
+                    stop = close + self.fixed_stop
+                    risk = self.fixed_stop
+                    sl_type = "fixed"
+                else:
+                    stop = max(close, self.long_avg) + self.buffer
+                    risk = stop - close
+                    sl_type = "dynamic"
+
                 target = close - self.rr * risk
                 out = {
-                    "timestamp": ts, "type": "SHORT ▼", "entry": round(close,2), "stop": round(stop,2), "target": round(target,2),
-                    "class": seg, "wa_long_avg": float(self.long_avg) if not np.isnan(self.long_avg) else None,
+                    "timestamp": ts, "type": "SHORT ▼", "entry": round(close,2),
+                    "stop": round(stop,2), "target": round(target,2),
+                    "class": seg,
+                    "wa_long_avg": float(self.long_avg) if not np.isnan(self.long_avg) else None,
                     "wa_short_avg": float(self.short_avg) if not np.isnan(self.short_avg) else None,
                     "long_pressure": float(long_pressure) if long_pressure is not None else None,
                     "short_pressure": float(short_pressure) if short_pressure is not None else None,
+                    "sl_type": sl_type
                 }
                 self.last_signal_time_short = ts
                 self.count_short += 1
@@ -279,15 +318,25 @@ class EngineState:
             spacing_ok = (self.last_signal_time_long is None) or (ts - self.last_signal_time_long >= self.min_gap)
 
             if wa_cross_ok and spacing_ok:
-                stop = min(close, self.short_avg) - self.buffer
-                risk = close - stop
+                if self.use_fixed_stop:
+                    stop = close - self.fixed_stop
+                    risk = self.fixed_stop
+                    sl_type = "fixed"
+                else:
+                    stop = min(close, self.short_avg) - self.buffer
+                    risk = close - stop
+                    sl_type = "dynamic"
+
                 target = close + self.rr * risk
                 out = {
-                    "timestamp": ts, "type": "LONG ▲", "entry": round(close,2), "stop": round(stop,2), "target": round(target,2),
-                    "class": seg, "wa_long_avg": float(self.long_avg) if not np.isnan(self.long_avg) else None,
+                    "timestamp": ts, "type": "LONG ▲", "entry": round(close,2),
+                    "stop": round(stop,2), "target": round(target,2),
+                    "class": seg,
+                    "wa_long_avg": float(self.long_avg) if not np.isnan(self.long_avg) else None,
                     "wa_short_avg": float(self.short_avg) if not np.isnan(self.short_avg) else None,
                     "long_pressure": float(long_pressure) if long_pressure is not None else None,
                     "short_pressure": float(short_pressure) if short_pressure is not None else None,
+                    "sl_type": sl_type
                 }
                 self.last_signal_time_long = ts
                 self.count_long += 1
@@ -365,10 +414,17 @@ require_wa_cross = st.sidebar.checkbox("Require WA‑line cross this bar", value
 min_gap_minutes = st.sidebar.slider("Min spacing between signals (min)", 6, 60, 18, step=3)
 max_per_side = st.sidebar.slider("Max signals per side", 1, 3, 2)
 rr = st.sidebar.number_input("Target Risk:Reward", value=1.5, step=0.1)
-buffer = st.sidebar.number_input("SL buffer (₹)", value=0.3, step=0.1)
+buffer = st.sidebar.number_input("(Dynamic SL mode) Extra buffer (₹)", value=0.3, step=0.1)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛑 Stop‑loss")
+use_fixed_stop = st.sidebar.checkbox("Use fixed stop-loss", value=True)
+fixed_stop = st.sidebar.number_input("Fixed stop-loss (₹)", value=20.0, step=1.0)
 
 st.sidebar.markdown("---")
 mode = st.sidebar.radio("Mode", ["Backtest (file)", "Live (simulate)"])
+
+st.sidebar.markdown("---")
 log_to_db = st.sidebar.checkbox("Log signals to PostgreSQL", value=False)
 engine = get_engine() if log_to_db else None
 if engine is None and log_to_db:
@@ -377,16 +433,18 @@ if engine is None and log_to_db:
 if log_to_db and engine is not None:
     ensure_signal_table(engine)
 
+# Optional login gate (only if your app uses it)
+try_login(engine)
+
 # Keep thresholds snapshot for logging
-params_json = {
+params_json = json.dumps({
     "price_thr_rupees": price_thr_rupees, "price_thr_pct": price_thr_pct,
     "oi_thr_frac": oi_thr_frac, "oi_thr_abs": oi_thr_abs, "confirm_bars": confirm_bars,
     "min_long_pressure": min_long_pressure, "min_short_pressure": min_short_pressure,
     "require_wa_cross": require_wa_cross, "min_gap_minutes": min_gap_minutes,
-    "max_per_side": max_per_side, "rr": rr, "buffer": buffer
-}
-import json
-params_json_str = json.dumps(params_json)
+    "max_per_side": max_per_side, "rr": rr, "buffer": buffer,
+    "use_fixed_stop": use_fixed_stop, "fixed_stop": fixed_stop
+})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data input
@@ -405,13 +463,14 @@ if mode == "Backtest (file)":
             if df0.iloc[i].astype(str).str.contains(r"\bTime\b", case=False, regex=True).any():
                 header_row = i; break
         raw = pd.read_excel(uploaded, header=header_row) if header_row is not None else pd.read_excel(uploaded)
+        # Many exported sheets have duplicated panels; keep the first one
         if "Time" in raw.columns and raw.shape[1] > 15:
             raw = raw.iloc[:, :15]
 
     data = parse_time_series(raw, date_hint=str(session_date))
 
 else:
-    st.info("Live simulation expects a CSV that grows over time (or we will stream it row by row).")
+    st.info("Live simulation expects a CSV that grows over time (or will be streamed row by row).")
     uploaded = st.file_uploader("Upload CSV (Time, Price, OI)", type=["csv"])
     if uploaded is None:
         st.stop()
@@ -420,9 +479,12 @@ else:
 # ──────────────────────────────────────────────────────────────────────────────
 # Run sequential engine (no repaint)
 # ──────────────────────────────────────────────────────────────────────────────
-state = EngineState(price_thr_rupees, price_thr_pct, oi_thr_frac, oi_thr_abs, confirm_bars,
-                    min_long_pressure, min_short_pressure, require_wa_cross,
-                    min_gap_minutes, max_per_side, rr, buffer)
+state = EngineState(
+    price_thr_rupees, price_thr_pct, oi_thr_frac, oi_thr_abs, confirm_bars,
+    min_long_pressure, min_short_pressure, require_wa_cross,
+    min_gap_minutes, max_per_side, rr, buffer,
+    use_fixed_stop, fixed_stop
+)
 
 placeholder_chart, placeholder_signals, placeholder_table = st.empty(), st.empty(), st.empty()
 
@@ -457,9 +519,15 @@ def render(state_df, signals):
 
     # Signal tape
     if len(signals):
-        tape_df = pd.DataFrame(signals)[["timestamp","type","entry","stop","target","class","wa_long_avg","wa_short_avg","long_pressure","short_pressure"]]
+        tape_df = pd.DataFrame(signals)[[
+            "timestamp","type","entry","stop","target","class",
+            "wa_long_avg","wa_short_avg","long_pressure","short_pressure","sl_type"
+        ]]
     else:
-        tape_df = pd.DataFrame(columns=["timestamp","type","entry","stop","target","class","wa_long_avg","wa_short_avg","long_pressure","short_pressure"])
+        tape_df = pd.DataFrame(columns=[
+            "timestamp","type","entry","stop","target","class",
+            "wa_long_avg","wa_short_avg","long_pressure","short_pressure","sl_type"
+        ])
     placeholder_signals.markdown("### 🧾 Signal Tape (bar‑close)")
     placeholder_signals.dataframe(tape_df, use_container_width=True, hide_index=True)
 
@@ -471,24 +539,22 @@ def render(state_df, signals):
 # Backtest sequential pass
 if mode == "Backtest (file)":
     rows = []
-    for i, r in data.iterrows():
+    for _, r in data.iterrows():
         rec, fired = state.step_bar(r)
         rows.append(rec)
-        # (no repaint) we could render progressively; but for speed, render once at the end
     state_df = pd.DataFrame(rows)
     render(state_df, state.signals)
 
     # Optional DB logging
     if log_to_db and engine is not None and len(state.signals):
-        meta = {"symbol": symbol, "session_date": pd.to_datetime(session_date).date(), "params_json": params_json_str}
+        meta = {"symbol": symbol, "session_date": pd.to_datetime(session_date).date(), "params_json": params_json}
         for s in state.signals:
             log_signal(engine, s, meta)
 
 # Live simulation (iterate with small delay)
 else:
     rows = []
-    # Limit loop for safety in Streamlit
-    for i, r in data.iterrows():
+    for _, r in data.iterrows():
         rec, fired = state.step_bar(r)
         rows.append(rec)
         state_df = pd.DataFrame(rows)
@@ -496,10 +562,9 @@ else:
 
         # Log immediately when a signal fires
         if fired and log_to_db and engine is not None:
-            meta = {"symbol": symbol, "session_date": pd.to_datetime(session_date).date(), "params_json": params_json_str}
+            meta = {"symbol": symbol, "session_date": pd.to_datetime(session_date).date(), "params_json": params_json}
             log_signal(engine, fired, meta)
 
-        # simulate new bar arrival (tune down if you want it faster)
         time.sleep(0.2)
 
     st.success("Live simulation finished. Engine did not repaint; signals fired at bar close only.")
