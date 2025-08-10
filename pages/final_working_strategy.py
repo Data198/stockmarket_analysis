@@ -13,10 +13,11 @@ DB_NAME = st.secrets["postgres"]["database"]
 db_url = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 engine = create_engine(db_url)
 
-# Clear cache button for troubleshooting
+# --- Clear cache button ---
 if st.sidebar.button("Clear Cache"):
     st.cache_data.clear()
-    st.experimental_rerun()
+    st.success("Cache cleared! Please interact with the app to reload data.")
+    st.stop()  # Stop further execution until next rerun
 
 # --- Analysis function ---
 def interpret_oi_data_with_abnormal(df, k=2):
@@ -38,20 +39,25 @@ def interpret_oi_data_with_abnormal(df, k=2):
         vol = row['volume']
         vol_abn = row['Abnormal_Volume']
         oi_abn = row['Abnormal_OI_Change']
+
         if price_ch > 0 and oi_ch > 0 and vol > 0:
             decision = "Bullish activity"
         elif price_ch < 0 and oi_ch < 0 and vol > 0:
             decision = "Bearish activity"
         else:
             decision = "Neutral/No clear trend"
+
         if vol_abn and oi_abn:
             decision += " + Abnormal Volume & OI Change"
         elif vol_abn:
             decision += " + Abnormal Volume"
         elif oi_abn:
             decision += " + Abnormal OI Change"
+
         interpretations.append(decision)
+
     df['Interpretation'] = interpretations
+
     return df[[
         'timestamp', 'close', 'Price_Change', 'open_interest', 'OI_Change', 'volume',
         'Abnormal_Volume', 'Abnormal_OI_Change', 'Interpretation'
@@ -73,7 +79,6 @@ selected_date = st.sidebar.selectbox("Select Trade Date", trade_dates)
 def get_symbols(trade_date):
     query = text("SELECT DISTINCT symbol FROM option_3min_ohlc WHERE trade_date = :trade_date ORDER BY symbol")
     df_syms = pd.read_sql(query, engine, params={"trade_date": selected_date})
-    st.write(f"Symbols found for {trade_date}: {df_syms['symbol'].tolist()}")  # Debug print
     return df_syms['symbol'].tolist()
 
 symbols = get_symbols(selected_date)
@@ -86,7 +91,6 @@ def get_expiries(trade_date, symbol):
         WHERE trade_date = :trade_date AND symbol = :symbol ORDER BY expiry_date
     """)
     df_exp = pd.read_sql(query, engine, params={"trade_date": trade_date, "symbol": symbol})
-    st.write(f"Expiries for {symbol} on {trade_date}: {df_exp['expiry_date'].tolist()}")  # Debug print
     return df_exp['expiry_date'].tolist()
 
 expiries = get_expiries(selected_date, selected_symbol)
@@ -100,7 +104,6 @@ def get_strikes(trade_date, symbol, expiry):
         ORDER BY strike_price
     """)
     df_strikes = pd.read_sql(query, engine, params={"trade_date": trade_date, "symbol": symbol, "expiry": expiry})
-    st.write(f"Strikes for {symbol} expiring on {expiry}: {df_strikes['strike_price'].tolist()}")  # Debug print
     return df_strikes['strike_price'].tolist()
 
 strikes = get_strikes(selected_date, selected_symbol, selected_expiry)
@@ -128,7 +131,6 @@ def load_data(trade_date, symbol, expiry, strike, option_type):
         "strike": strike,
         "option_type": option_type
     })
-    st.write(f"Loaded {len(df)} rows for selected filters.")  # Debug print
     return df
 
 df_data = load_data(selected_date, selected_symbol, selected_expiry, selected_strike, selected_option_type)
@@ -137,6 +139,7 @@ if df_data.empty:
     st.warning("No data found for selected filters.")
 else:
     analyzed_df = interpret_oi_data_with_abnormal(df_data)
+    
     st.subheader("Full Analysis")
     st.dataframe(analyzed_df)
     
