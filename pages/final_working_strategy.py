@@ -3,37 +3,70 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from urllib.parse import quote
 
-# --- Secure DB Connection ---
-DB_USER = st.secrets["postgres"]["user"]
-DB_PASS = quote(st.secrets["postgres"]["password"])  # encode password safely
-DB_HOST = st.secrets["postgres"]["host"]
-DB_PORT = st.secrets["postgres"]["port"]
-DB_NAME = st.secrets["postgres"]["database"]
+# --- Database connection setup ---
+@st.cache_resource(show_spinner=False)
+def get_db_engine():
+    user = st.secrets["postgres"]["user"]
+    password = quote(st.secrets["postgres"]["password"])
+    host = st.secrets["postgres"]["host"]
+    port = st.secrets["postgres"]["port"]
+    database = st.secrets["postgres"]["database"]
+    url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
+    return create_engine(url)
 
-db_url = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-engine = create_engine(db_url)
+engine = get_db_engine()
 
-# --- Clear cache button ---
+# --- Cache clearing button ---
 if st.sidebar.button("Clear Cache"):
     st.cache_data.clear()
     st.success("Cache cleared! Please interact with the app to reload data.")
-    st.stop()  # Stop further execution until next rerun
+    st.stop()
+
+# --- Data retrieval functions ---
+@st.cache_data(show_spinner=False)
+def fetch_distinct_values(column, filters=None, order_by=None):
+    """Generic function to fetch distinct column values with optional filters."""
+    filters = filters or {}
+    order_by = order_by or column
+    where_clauses = " AND ".join([f"{key} = :{key}" for key in filters.keys()])
+    sql = f"SELECT DISTINCT {column} FROM option_3min_ohlc"
+    if where_clauses:
+        sql += " WHERE " + where_clauses
+    sql += f" ORDER BY {order_by}"
+    query = text(sql)
+    df = pd.read_sql(query, engine, params=filters)
+    return df[column].tolist()
+
+@st.cache_data(show_spinner=False)
+def load_option_data(filters):
+    """Load option OHLC and OI data based on filters dictionary."""
+    sql = """
+        SELECT timestamp, close, open_interest, volume
+        FROM option_3min_ohlc
+        WHERE trade_date = :trade_date
+          AND symbol = :symbol
+          AND expiry_date = :expiry_date
+          AND strike_price = :strike_price
+          AND option_type = :option_type
+        ORDER BY timestamp
+    """
+    query = text(sql)
+    return pd.read_sql(query, engine, params=filters)
 
 # --- Analysis function ---
-def interpret_oi_data_with_abnormal(df, k=2):
-    df = df.sort_values(by='timestamp')
+def analyze_oi_volume(df, k=2):
+    df = df.sort_values("timestamp").copy()
     df['Price_Change'] = df['close'].diff()
     df['OI_Change'] = df['open_interest'].diff()
-    df['Volume_Change'] = df['volume'].diff()
     df['Vol_Mean'] = df['volume'].expanding(min_periods=1).mean()
     df['Vol_Std'] = df['volume'].expanding(min_periods=2).std().fillna(0)
     df['OI_Mean'] = df['OI_Change'].expanding(min_periods=1).mean()
     df['OI_Std'] = df['OI_Change'].expanding(min_periods=2).std().fillna(0)
+
     df['Abnormal_Volume'] = df['volume'] > (df['Vol_Mean'] + k * df['Vol_Std'])
     df['Abnormal_OI_Change'] = df['OI_Change'].abs() > (df['OI_Mean'].abs() + k * df['OI_Std'].abs())
 
-    interpretations = []
-    for _, row in df.iterrows():
+    def interpret_row(row):
         price_ch = row['Price_Change']
         oi_ch = row['OI_Change']
         vol = row['volume']
@@ -41,22 +74,21 @@ def interpret_oi_data_with_abnormal(df, k=2):
         oi_abn = row['Abnormal_OI_Change']
 
         if price_ch > 0 and oi_ch > 0 and vol > 0:
-            decision = "Bullish activity"
+            base = "Bullish activity"
         elif price_ch < 0 and oi_ch < 0 and vol > 0:
-            decision = "Bearish activity"
+            base = "Bearish activity"
         else:
-            decision = "Neutral/No clear trend"
+            base = "Neutral/No clear trend"
 
         if vol_abn and oi_abn:
-            decision += " + Abnormal Volume & OI Change"
-        elif vol_abn:
-            decision += " + Abnormal Volume"
-        elif oi_abn:
-            decision += " + Abnormal OI Change"
+            return f"{base} + Abnormal Volume & OI Change"
+        if vol_abn:
+            return f"{base} + Abnormal Volume"
+        if oi_abn:
+            return f"{base} + Abnormal OI Change"
+        return base
 
-        interpretations.append(decision)
-
-    df['Interpretation'] = interpretations
+    df['Interpretation'] = df.apply(interpret_row, axis=1)
 
     return df[[
         'timestamp', 'close', 'Price_Change', 'open_interest', 'OI_Change', 'volume',
@@ -66,96 +98,70 @@ def interpret_oi_data_with_abnormal(df, k=2):
 # --- Streamlit UI ---
 st.title("Options 3-min OI & Volume Abnormality Analysis")
 
-@st.cache_data(show_spinner=False)
-def get_trade_dates():
-    query = "SELECT DISTINCT trade_date FROM option_3min_ohlc ORDER BY trade_date DESC"
-    df_dates = pd.read_sql(query, engine)
-    return df_dates['trade_date'].tolist()
-
-trade_dates = get_trade_dates()
+# Load filters dynamically
+trade_dates = fetch_distinct_values("trade_date")
 selected_date = st.sidebar.selectbox("Select Trade Date", trade_dates)
 
-@st.cache_data(show_spinner=False)
-def get_symbols(trade_date):
-    query = text("SELECT DISTINCT symbol FROM option_3min_ohlc WHERE trade_date = :trade_date ORDER BY symbol")
-    df_syms = pd.read_sql(query, engine, params={"trade_date": selected_date})
-    return df_syms['symbol'].tolist()
-
-symbols = get_symbols(selected_date)
+symbols = fetch_distinct_values("symbol", filters={"trade_date": selected_date})
 selected_symbol = st.sidebar.selectbox("Select Symbol", symbols)
 
-@st.cache_data(show_spinner=False)
-def get_expiries(trade_date, symbol):
-    query = text("""
-        SELECT DISTINCT expiry_date FROM option_3min_ohlc 
-        WHERE trade_date = :trade_date AND symbol = :symbol ORDER BY expiry_date
-    """)
-    df_exp = pd.read_sql(query, engine, params={"trade_date": trade_date, "symbol": symbol})
-    return df_exp['expiry_date'].tolist()
-
-expiries = get_expiries(selected_date, selected_symbol)
+expiries = fetch_distinct_values("expiry_date", filters={"trade_date": selected_date, "symbol": selected_symbol})
 selected_expiry = st.sidebar.selectbox("Select Expiry Date", expiries)
 
-@st.cache_data(show_spinner=False)
-def get_strikes(trade_date, symbol, expiry):
-    query = text("""
-        SELECT DISTINCT strike_price FROM option_3min_ohlc 
-        WHERE trade_date = :trade_date AND symbol = :symbol AND expiry_date = :expiry
-        ORDER BY strike_price
-    """)
-    df_strikes = pd.read_sql(query, engine, params={"trade_date": trade_date, "symbol": symbol, "expiry": expiry})
-    return df_strikes['strike_price'].tolist()
-
-strikes = get_strikes(selected_date, selected_symbol, selected_expiry)
+strikes = fetch_distinct_values("strike_price", filters={
+    "trade_date": selected_date,
+    "symbol": selected_symbol,
+    "expiry_date": selected_expiry
+})
 selected_strike = st.sidebar.selectbox("Select Strike Price", strikes)
 
-option_types = ['CE', 'PE']
+option_types = fetch_distinct_values("option_type", filters={
+    "trade_date": selected_date,
+    "symbol": selected_symbol,
+    "expiry_date": selected_expiry,
+    "strike_price": selected_strike
+})
 selected_option_type = st.sidebar.selectbox("Select Option Type", option_types)
 
-@st.cache_data(show_spinner=False)
-def load_data(trade_date, symbol, expiry, strike, option_type):
-    query = text("""
-        SELECT timestamp, close, open_interest, volume, price_change
-        FROM option_3min_ohlc
-        WHERE trade_date = :trade_date
-          AND symbol = :symbol
-          AND expiry_date = :expiry
-          AND strike_price = :strike
-          AND option_type = :option_type
-        ORDER BY timestamp
-    """)
-    df = pd.read_sql(query, engine, params={
-        "trade_date": trade_date,
-        "symbol": symbol,
-        "expiry": expiry,
-        "strike": strike,
-        "option_type": option_type
-    })
-    return df
-
-df_data = load_data(selected_date, selected_symbol, selected_expiry, selected_strike, selected_option_type)
+# Load filtered data
+filters = {
+    "trade_date": selected_date,
+    "symbol": selected_symbol,
+    "expiry_date": selected_expiry,
+    "strike_price": selected_strike,
+    "option_type": selected_option_type
+}
+df_data = load_option_data(filters)
 
 if df_data.empty:
     st.warning("No data found for selected filters.")
 else:
-    analyzed_df = interpret_oi_data_with_abnormal(df_data)
-    
+    analyzed_df = analyze_oi_volume(df_data)
+
     st.subheader("Full Analysis")
-    st.dataframe(analyzed_df)
-    
+    st.dataframe(analyzed_df, use_container_width=True)
+
     abnormal_df = analyzed_df[(analyzed_df['Abnormal_Volume']) | (analyzed_df['Abnormal_OI_Change'])]
     st.subheader("Abnormal Volume or OI Change")
-    st.dataframe(abnormal_df)
-    
-    def to_excel(df):
+    st.dataframe(abnormal_df, use_container_width=True)
+
+    # Excel export function
+    def df_to_excel_bytes(df):
         import io
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
         return output.getvalue()
-    
-    excel_all = to_excel(analyzed_df)
-    excel_abnormal = to_excel(abnormal_df)
-    
-    st.download_button("Download Full Analysis Excel", data=excel_all, file_name="options_oi_full_analysis.xlsx")
-    st.download_button("Download Abnormal Rows Excel", data=excel_abnormal, file_name="options_oi_abnormal_rows.xlsx")
+
+    st.download_button(
+        label="Download Full Analysis Excel",
+        data=df_to_excel_bytes(analyzed_df),
+        file_name="options_oi_full_analysis.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    st.download_button(
+        label="Download Abnormal Rows Excel",
+        data=df_to_excel_bytes(abnormal_df),
+        file_name="options_oi_abnormal_rows.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
