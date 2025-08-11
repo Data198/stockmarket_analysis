@@ -16,30 +16,50 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- Cache clearing button ---
-#if st.sidebar.button("Clear Cache"):
-    #st.cache_data.clear()
-    #st.success("Cache cleared! Please interact with the app to reload data.")
-    #st.stop()
-
 # --- Data retrieval functions ---
 @st.cache_data(show_spinner=False)
-def fetch_distinct_values(column, filters=None, order_by=None):
-    """Generic function to fetch distinct column values with optional filters."""
-    filters = filters or {}
+def fetch_distinct_values(column: str, 
+                         trade_date: str = None, 
+                         symbol: str = None,
+                         expiry_date: str = None,
+                         strike_price: float = None,
+                         option_type: str = None,
+                         order_by: str = None):
     order_by = order_by or column
-    where_clauses = " AND ".join([f"{key} = :{key}" for key in filters.keys()])
+    filters = {}
+    where_clauses = []
+    
+    if trade_date is not None:
+        filters["trade_date"] = trade_date
+        where_clauses.append("trade_date = :trade_date")
+    if symbol is not None:
+        filters["symbol"] = symbol
+        where_clauses.append("symbol = :symbol")
+    if expiry_date is not None:
+        filters["expiry_date"] = expiry_date
+        where_clauses.append("expiry_date = :expiry_date")
+    if strike_price is not None:
+        filters["strike_price"] = strike_price
+        where_clauses.append("strike_price = :strike_price")
+    if option_type is not None:
+        filters["option_type"] = option_type
+        where_clauses.append("option_type = :option_type")
+    
     sql = f"SELECT DISTINCT {column} FROM option_3min_ohlc"
     if where_clauses:
-        sql += " WHERE " + where_clauses
+        sql += " WHERE " + " AND ".join(where_clauses)
     sql += f" ORDER BY {order_by}"
+    
     query = text(sql)
     df = pd.read_sql(query, engine, params=filters)
     return df[column].tolist()
 
 @st.cache_data(show_spinner=False)
-def load_option_data(filters):
-    """Load option OHLC and OI data based on filters dictionary."""
+def load_option_data(trade_date: str,
+                     symbol: str,
+                     expiry_date: str,
+                     strike_price: float,
+                     option_type: str):
     sql = """
         SELECT timestamp, close, open_interest, volume
         FROM option_3min_ohlc
@@ -51,7 +71,15 @@ def load_option_data(filters):
         ORDER BY timestamp
     """
     query = text(sql)
-    return pd.read_sql(query, engine, params=filters)
+    params = {
+        "trade_date": trade_date,
+        "symbol": symbol,
+        "expiry_date": expiry_date,
+        "strike_price": strike_price,
+        "option_type": option_type
+    }
+    df = pd.read_sql(query, engine, params=params)
+    return df
 
 # --- Analysis function ---
 def analyze_oi_volume(df, k=2):
@@ -98,40 +126,28 @@ def analyze_oi_volume(df, k=2):
 # --- Streamlit UI ---
 st.title("Options 3-min OI & Volume Abnormality Analysis")
 
-# Load filters dynamically
 trade_dates = fetch_distinct_values("trade_date")
 selected_date = st.sidebar.selectbox("Select Trade Date", trade_dates)
 
-symbols = fetch_distinct_values("symbol", filters={"trade_date": selected_date})
+symbols = fetch_distinct_values("symbol", trade_date=selected_date)
 selected_symbol = st.sidebar.selectbox("Select Symbol", symbols)
 
-expiries = fetch_distinct_values("expiry_date", filters={"trade_date": selected_date, "symbol": selected_symbol})
+expiries = fetch_distinct_values("expiry_date", trade_date=selected_date, symbol=selected_symbol)
 selected_expiry = st.sidebar.selectbox("Select Expiry Date", expiries)
 
-strikes = fetch_distinct_values("strike_price", filters={
-    "trade_date": selected_date,
-    "symbol": selected_symbol,
-    "expiry_date": selected_expiry
-})
+strikes = fetch_distinct_values("strike_price", trade_date=selected_date, symbol=selected_symbol, expiry_date=selected_expiry)
 selected_strike = st.sidebar.selectbox("Select Strike Price", strikes)
 
-option_types = fetch_distinct_values("option_type", filters={
-    "trade_date": selected_date,
-    "symbol": selected_symbol,
-    "expiry_date": selected_expiry,
-    "strike_price": selected_strike
-})
+option_types = fetch_distinct_values("option_type", trade_date=selected_date, symbol=selected_symbol, expiry_date=selected_expiry, strike_price=selected_strike)
 selected_option_type = st.sidebar.selectbox("Select Option Type", option_types)
 
-# Load filtered data
-filters = {
-    "trade_date": selected_date,
-    "symbol": selected_symbol,
-    "expiry_date": selected_expiry,
-    "strike_price": selected_strike,
-    "option_type": selected_option_type
-}
-df_data = load_option_data(filters)
+df_data = load_option_data(
+    trade_date=selected_date,
+    symbol=selected_symbol,
+    expiry_date=selected_expiry,
+    strike_price=selected_strike,
+    option_type=selected_option_type
+)
 
 if df_data.empty:
     st.warning("No data found for selected filters.")
