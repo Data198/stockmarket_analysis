@@ -17,10 +17,10 @@ def get_db_engine():
 engine = get_db_engine()
 
 # --- Cache clearing button ---
-if st.sidebar.button("Clear Cache"):
-    st.cache_data.clear()
-    st.success("Cache cleared! Please interact with the app to reload data.")
-    st.stop()
+#if st.sidebar.button("Clear Cache"):
+    #st.cache_data.clear()
+    #st.success("Cache cleared! Please interact with the app to reload data.")
+    #st.stop()
 
 # --- Data retrieval functions ---
 @st.cache_data(show_spinner=False)
