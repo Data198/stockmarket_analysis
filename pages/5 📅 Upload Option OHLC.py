@@ -64,7 +64,6 @@ if uploaded_files:
 
             if st.button(f"Process and Upload: {uploaded_file.name}"):
                 raw_preview = pd.read_excel(uploaded_file, header=None)
-                st.write("📊 Raw preview from Excel:", raw_preview.head(5))
 
                 header_row = None
                 for i, row in raw_preview.iterrows():
@@ -76,7 +75,6 @@ if uploaded_files:
                     raise ValueError("❌ Couldn't detect header row.")
 
                 df_raw = pd.read_excel(uploaded_file, header=header_row)
-                st.write("📄 Excel Columns:", df_raw.columns.tolist())
 
                 # Dynamic PE/CE mapping
                 suffix = "" if option_type == "CE" else ".1"
@@ -98,8 +96,6 @@ if uploaded_files:
                 for new_col, old_col in mapping.items():
                     col = get_col(old_col)
                     df_clean[new_col] = df_raw[col] if col else np.nan
-
-                st.write("📝 Preview Mapped Columns", df_clean.head())
 
                 df_clean = df_clean.dropna(subset=["timestamp"])
                 df_clean = df_clean[~df_clean["timestamp"].astype(str).str.lower().str.contains("time")]
