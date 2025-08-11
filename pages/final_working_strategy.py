@@ -100,6 +100,7 @@ st.title("Options 3-min OI & Volume Abnormality Analysis")
 
 # Load filters dynamically
 trade_dates = fetch_distinct_values("trade_date")
+st.sidebar.markdown("**Select Trade Date**") 
 selected_date = st.sidebar.selectbox("Select Trade Date", trade_dates)
 
 symbols = fetch_distinct_values("symbol", filters={"trade_date": selected_date})
