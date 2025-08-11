@@ -16,6 +16,9 @@ def get_db_engine():
 
 engine = get_db_engine()
 
+# --- Sidebar option to force cache refresh ---
+refresh = st.sidebar.checkbox("Refresh Data (force reload)", value=False)
+
 # --- Data retrieval functions ---
 @st.cache_data(show_spinner=False)
 def fetch_distinct_values(column: str, 
@@ -24,7 +27,8 @@ def fetch_distinct_values(column: str,
                          expiry_date: str = None,
                          strike_price: float = None,
                          option_type: str = None,
-                         order_by: str = None):
+                         order_by: str = None,
+                         refresh_key=None):  # refresh_key to bust cache
     order_by = order_by or column
     filters = {}
     where_clauses = []
@@ -59,7 +63,8 @@ def load_option_data(trade_date: str,
                      symbol: str,
                      expiry_date: str,
                      strike_price: float,
-                     option_type: str):
+                     option_type: str,
+                     refresh_key=None):  # refresh_key to bust cache
     sql = """
         SELECT timestamp, close, open_interest, volume
         FROM option_3min_ohlc
@@ -126,19 +131,19 @@ def analyze_oi_volume(df, k=2):
 # --- Streamlit UI ---
 st.title("Options 3-min OI & Volume Abnormality Analysis")
 
-trade_dates = fetch_distinct_values("trade_date")
+trade_dates = fetch_distinct_values("trade_date", refresh_key=refresh)
 selected_date = st.sidebar.selectbox("Select Trade Date", trade_dates)
 
-symbols = fetch_distinct_values("symbol", trade_date=selected_date)
+symbols = fetch_distinct_values("symbol", trade_date=selected_date, refresh_key=refresh)
 selected_symbol = st.sidebar.selectbox("Select Symbol", symbols)
 
-expiries = fetch_distinct_values("expiry_date", trade_date=selected_date, symbol=selected_symbol)
+expiries = fetch_distinct_values("expiry_date", trade_date=selected_date, symbol=selected_symbol, refresh_key=refresh)
 selected_expiry = st.sidebar.selectbox("Select Expiry Date", expiries)
 
-strikes = fetch_distinct_values("strike_price", trade_date=selected_date, symbol=selected_symbol, expiry_date=selected_expiry)
+strikes = fetch_distinct_values("strike_price", trade_date=selected_date, symbol=selected_symbol, expiry_date=selected_expiry, refresh_key=refresh)
 selected_strike = st.sidebar.selectbox("Select Strike Price", strikes)
 
-option_types = fetch_distinct_values("option_type", trade_date=selected_date, symbol=selected_symbol, expiry_date=selected_expiry, strike_price=selected_strike)
+option_types = fetch_distinct_values("option_type", trade_date=selected_date, symbol=selected_symbol, expiry_date=selected_expiry, strike_price=selected_strike, refresh_key=refresh)
 selected_option_type = st.sidebar.selectbox("Select Option Type", option_types)
 
 df_data = load_option_data(
@@ -146,7 +151,8 @@ df_data = load_option_data(
     symbol=selected_symbol,
     expiry_date=selected_expiry,
     strike_price=selected_strike,
-    option_type=selected_option_type
+    option_type=selected_option_type,
+    refresh_key=refresh
 )
 
 if df_data.empty:
