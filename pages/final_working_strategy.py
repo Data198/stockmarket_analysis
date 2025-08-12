@@ -3,7 +3,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from urllib.parse import quote
 
-# --- Database connection setup ---
+# DB connection with cache_resource (OK to cache connection)
 @st.cache_resource(show_spinner=False)
 def get_db_engine():
     user = st.secrets["postgres"]["user"]
@@ -16,18 +16,15 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# --- Cached dropdown fetchers ---
-@st.cache_data(show_spinner=False)
+# Fetch distinct dropdown values WITHOUT caching
 def fetch_distinct_values(column: str, 
                          trade_date: str = None, 
                          symbol: str = None,
                          expiry_date: str = None,
                          strike_price: float = None,
                          option_type: str = None):
-    order_by = column
     filters = {}
     where_clauses = []
-    
     if trade_date is not None:
         filters["trade_date"] = trade_date
         where_clauses.append("trade_date = :trade_date")
@@ -47,29 +44,25 @@ def fetch_distinct_values(column: str,
     sql = f"SELECT DISTINCT {column} FROM option_3min_ohlc"
     if where_clauses:
         sql += " WHERE " + " AND ".join(where_clauses)
-    sql += f" ORDER BY {order_by}"
+    sql += f" ORDER BY {column}"
     
     query = text(sql)
     df = pd.read_sql(query, engine, params=filters)
     return df[column].tolist()
 
-# --- Main data loader WITHOUT caching ---
+# Load main option data WITHOUT caching
 def load_option_data(trade_date, symbol, expiry_date, strike_price, option_type):
-    # Convert parameters to expected types/strings
     if hasattr(trade_date, 'isoformat'):
         trade_date = trade_date.isoformat()
     if hasattr(expiry_date, 'isoformat'):
         expiry_date = expiry_date.isoformat()
-    if isinstance(strike_price, str):
-        try:
-            strike_price = float(strike_price)
-        except:
-            st.error("Invalid strike price format.")
-            return pd.DataFrame()
-
-    # Validate mandatory parameters
+    try:
+        strike_price = float(strike_price)
+    except Exception:
+        st.error("Strike price must be a number.")
+        return pd.DataFrame()
     if not all([trade_date, symbol, expiry_date, strike_price, option_type]):
-        st.warning("Please select all filter options.")
+        st.warning("Please select all filters.")
         return pd.DataFrame()
 
     sql = """
@@ -90,19 +83,12 @@ def load_option_data(trade_date, symbol, expiry_date, strike_price, option_type)
         "strike_price": strike_price,
         "option_type": option_type
     }
+    df = pd.read_sql(query, engine, params=params)
+    return df
 
-    # Debug prints to console/logs
-    print("Executing SQL with params:", params)
-
-    try:
-        df = pd.read_sql(query, engine, params=params)
-        return df
-    except Exception as e:
-        st.error(f"Database query failed: {e}")
-        return pd.DataFrame()
-
-# --- Analysis function ---
+# Your analysis function stays the same...
 def analyze_oi_volume(df, k=2):
+    # Same as before
     df = df.sort_values("timestamp").copy()
     df['Price_Change'] = df['close'].diff()
     df['OI_Change'] = df['open_interest'].diff()
@@ -143,7 +129,7 @@ def analyze_oi_volume(df, k=2):
         'Abnormal_Volume', 'Abnormal_OI_Change', 'Interpretation'
     ]]
 
-# --- Streamlit UI ---
+# Streamlit UI
 st.title("Options 3-min OI & Volume Abnormality Analysis")
 
 trade_dates = fetch_distinct_values("trade_date")
@@ -181,7 +167,6 @@ else:
     st.subheader("Abnormal Volume or OI Change")
     st.dataframe(abnormal_df, use_container_width=True)
 
-    # Excel export function
     def df_to_excel_bytes(df):
         import io
         output = io.BytesIO()
