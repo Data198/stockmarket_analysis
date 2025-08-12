@@ -53,8 +53,25 @@ def fetch_distinct_values(column: str,
     df = pd.read_sql(query, engine, params=filters)
     return df[column].tolist()
 
-# --- Main data loader WITHOUT caching for fresh data ---
+# --- Main data loader WITHOUT caching ---
 def load_option_data(trade_date, symbol, expiry_date, strike_price, option_type):
+    # Convert parameters to expected types/strings
+    if hasattr(trade_date, 'isoformat'):
+        trade_date = trade_date.isoformat()
+    if hasattr(expiry_date, 'isoformat'):
+        expiry_date = expiry_date.isoformat()
+    if isinstance(strike_price, str):
+        try:
+            strike_price = float(strike_price)
+        except:
+            st.error("Invalid strike price format.")
+            return pd.DataFrame()
+
+    # Validate mandatory parameters
+    if not all([trade_date, symbol, expiry_date, strike_price, option_type]):
+        st.warning("Please select all filter options.")
+        return pd.DataFrame()
+
     sql = """
         SELECT timestamp, close, open_interest, volume
         FROM option_3min_ohlc
@@ -73,8 +90,16 @@ def load_option_data(trade_date, symbol, expiry_date, strike_price, option_type)
         "strike_price": strike_price,
         "option_type": option_type
     }
-    df = pd.read_sql(query, engine, params=params)
-    return df
+
+    # Debug prints to console/logs
+    print("Executing SQL with params:", params)
+
+    try:
+        df = pd.read_sql(query, engine, params=params)
+        return df
+    except Exception as e:
+        st.error(f"Database query failed: {e}")
+        return pd.DataFrame()
 
 # --- Analysis function ---
 def analyze_oi_volume(df, k=2):
