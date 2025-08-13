@@ -246,10 +246,61 @@ def analyze_oi_volume(df, k=2):
     
     df['Interpretation'] = df.apply(interpret_row, axis=1)
     
+    # Trading Signal Generation
+    def generate_trading_signal(row):
+        price_ch = row['Price_Change']
+        oi_ch = row['OI_Change']
+        vol_abn = row['Abnormal_Volume']
+        oi_abn = row['Abnormal_OI_Change']
+        vol_z = row['Vol_ZScore']
+        oi_z = row['OI_ZScore']
+        
+        # Strong Bullish Signal
+        if (price_ch > 0 and oi_ch > 0 and vol_abn and oi_abn and vol_z > 1.5 and oi_z > 1.5):
+            return "🚀 STRONG BUY - Heavy accumulation with price momentum"
+        
+        # Strong Bearish Signal
+        elif (price_ch < 0 and oi_ch < 0 and vol_abn and oi_abn and vol_z > 1.5 and oi_z > 1.5):
+            return "💥 STRONG SELL - Heavy distribution with price decline"
+        
+        # Moderate Bullish Signal
+        elif (price_ch > 0 and oi_ch > 0 and vol_abn):
+            return "📈 BUY - Price up with volume confirmation"
+        
+        # Moderate Bearish Signal
+        elif (price_ch < 0 and oi_ch < 0 and vol_abn):
+            return "📉 SELL - Price down with volume confirmation"
+        
+        # Accumulation Signal (Price down but OI up)
+        elif (price_ch < 0 and oi_ch > 0 and vol_abn):
+            return "🔄 ACCUMULATE - Smart money buying dips"
+        
+        # Profit Taking Signal (Price up but OI down)
+        elif (price_ch > 0 and oi_ch < 0 and vol_abn):
+            return "💰 TAKE PROFIT - Profit booking in progress"
+        
+        # Wait Signal
+        else:
+            return "⏳ WAIT - No clear signal, monitor for setup"
+    
+    df['Trading_Signal'] = df.apply(generate_trading_signal, axis=1)
+    
     # Risk assessment
     df['Risk_Level'] = df.apply(lambda row: 
         'High' if (row['Vol_ZScore'] > 2 or row['OI_ZScore'] > 2) else
         'Medium' if (row['Vol_ZScore'] > 1.5 or row['OI_ZScore'] > 1.5) else 'Low', axis=1)
+    
+    # Confidence Score (0-100)
+    def calculate_confidence(row):
+        score = 0
+        if row['Abnormal_Volume']: score += 25
+        if row['Abnormal_OI_Change']: score += 25
+        if abs(row['Vol_ZScore']) > 1.5: score += 20
+        if abs(row['OI_ZScore']) > 1.5: score += 20
+        if abs(row['Price_Change_Pct']) > 1: score += 10
+        return min(score, 100)
+    
+    df['Confidence_Score'] = df.apply(calculate_confidence, axis=1)
     
     return df
 
@@ -380,7 +431,7 @@ if all([selected_date, selected_symbol, selected_expiry, selected_strike, select
         with col1:
             st.metric(
                 "Price Change",
-                f"${metrics['Total_Price_Change']:.2f}",
+                f"₹{metrics['Total_Price_Change']:.2f}",
                 f"{metrics['Total_Price_Change_Pct']:.2f}%"
             )
         
@@ -404,6 +455,130 @@ if all([selected_date, selected_symbol, selected_expiry, selected_strike, select
                 f"{metrics['High_Risk_Periods']} periods",
                 f"{(metrics['High_Risk_Periods']/len(analyzed_df)*100):.1f}% of time"
             )
+        
+        # 🎯 TRADING DECISION DASHBOARD
+        st.subheader("🎯 Live Trading Decision Dashboard")
+        
+        # Get latest signals
+        latest_data = analyzed_df.iloc[-1]
+        latest_signal = latest_data['Trading_Signal']
+        confidence = latest_data['Confidence_Score']
+        risk_level = latest_data['Risk_Level']
+        
+        # Decision summary
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                        padding: 1.5rem; border-radius: 10px; color: white; text-align: center;">
+                <h3>📊 Current Signal</h3>
+                <p style="font-size: 1.2em; font-weight: bold;">{}</p>
+            </div>
+            """.format(latest_signal), unsafe_allow_html=True)
+        
+        with col2:
+            # Color code confidence
+            if confidence >= 80:
+                color = "#28a745"  # Green
+                status = "🟢 High Confidence"
+            elif confidence >= 60:
+                color = "#ffc107"  # Yellow
+                status = "🟡 Medium Confidence"
+            else:
+                color = "#dc3545"  # Red
+                status = "🔴 Low Confidence"
+            
+            st.markdown(f"""
+            <div style="background: {color}; 
+                        padding: 1.5rem; border-radius: 10px; color: white; text-align: center;">
+                <h3>🎯 Signal Confidence</h3>
+                <p style="font-size: 2em; font-weight: bold;">{confidence}%</p>
+                <p style="font-size: 1.1em;">{status}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            # Color code risk
+            if risk_level == 'High':
+                color = "#dc3545"  # Red
+                icon = "🚨"
+            elif risk_level == 'Medium':
+                color = "#ffc107"  # Yellow
+                icon = "⚠️"
+            else:
+                color = "#28a745"  # Green
+                icon = "✅"
+            
+            st.markdown(f"""
+            <div style="background: {color}; 
+                        padding: 1.5rem; border-radius: 10px; color: white; text-align: center;">
+                <h3>⚠️ Risk Level</h3>
+                <p style="font-size: 2em; font-weight: bold;">{icon}</p>
+                <p style="font-size: 1.1em;">{risk_level} Risk</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Actionable Trading Recommendations
+        st.subheader("💡 Actionable Trading Recommendations")
+        
+        # Generate recommendations based on latest data
+        recommendations = []
+        
+        if "STRONG BUY" in latest_signal:
+            recommendations.append("🚀 **IMMEDIATE ACTION**: Enter long position with tight stop loss")
+            recommendations.append("📈 **Target**: Look for 2-3% move in next 15-30 minutes")
+            recommendations.append("🛡️ **Stop Loss**: Set at recent support level")
+        elif "STRONG SELL" in latest_signal:
+            recommendations.append("💥 **IMMEDIATE ACTION**: Enter short position or exit long positions")
+            recommendations.append("📉 **Target**: Look for 2-3% decline in next 15-30 minutes")
+            recommendations.append("🛡️ **Stop Loss**: Set at recent resistance level")
+        elif "BUY" in latest_signal:
+            recommendations.append("📈 **ACTION**: Consider long entry on pullbacks")
+            recommendations.append("⏰ **Timing**: Wait for confirmation in next 5-10 minutes")
+            recommendations.append("📊 **Monitor**: Watch for increasing volume confirmation")
+        elif "SELL" in latest_signal:
+            recommendations.append("📉 **ACTION**: Consider short entry on rallies")
+            recommendations.append("⏰ **Timing**: Wait for confirmation in next 5-10 minutes")
+            recommendations.append("📊 **Monitor**: Watch for increasing volume confirmation")
+        elif "ACCUMULATE" in latest_signal:
+            recommendations.append("🔄 **ACTION**: Start accumulating in small quantities")
+            recommendations.append("📈 **Strategy**: Scale in on further dips")
+            recommendations.append("⏰ **Timeframe**: This is a longer-term setup")
+        elif "TAKE PROFIT" in latest_signal:
+            recommendations.append("💰 **ACTION**: Book partial profits if holding long")
+            recommendations.append("📊 **Monitor**: Watch for reversal signals")
+            recommendations.append("🔄 **Re-entry**: Wait for fresh accumulation signals")
+        else:
+            recommendations.append("⏳ **ACTION**: No immediate action required")
+            recommendations.append("👀 **Monitor**: Watch for new signal development")
+            recommendations.append("📊 **Analysis**: Focus on other opportunities")
+        
+        # Display recommendations
+        for i, rec in enumerate(recommendations, 1):
+            st.markdown(f"{i}. {rec}")
+        
+        # Market Context Analysis
+        st.subheader("🔍 Market Context Analysis")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Recent Signal History (Last 5 periods):**")
+            recent_signals = analyzed_df.tail(5)[['timestamp', 'Trading_Signal', 'Confidence_Score']].copy()
+            recent_signals['timestamp'] = recent_signals['timestamp'].dt.strftime('%H:%M:%S')
+            st.dataframe(recent_signals, use_container_width=True)
+        
+        with col2:
+            st.write("**Signal Strength Distribution:**")
+            signal_counts = analyzed_df['Trading_Signal'].value_counts()
+            fig_signals = px.bar(
+                x=signal_counts.values,
+                y=signal_counts.index,
+                orientation='h',
+                title="Trading Signal Distribution"
+            )
+            st.plotly_chart(fig_signals, use_container_width=True)
         
         # Charts section
         st.subheader("📈 Price & Volume Analysis")
@@ -526,7 +701,7 @@ if all([selected_date, selected_symbol, selected_expiry, selected_strike, select
             display_df[['timestamp', 'close', 'Price_Change', 'Price_Change_Pct', 
                        'volume', 'Vol_ZScore', 'Abnormal_Volume',
                        'open_interest', 'OI_Change', 'OI_ZScore', 'Abnormal_OI_Change',
-                       'Risk_Level', 'Interpretation']],
+                       'Risk_Level', 'Trading_Signal', 'Confidence_Score', 'Interpretation']],
             use_container_width=True,
             height=400
         )
@@ -571,6 +746,107 @@ if all([selected_date, selected_symbol, selected_expiry, selected_strike, select
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
+        # 🎯 COMPREHENSIVE TRADING STRATEGY GUIDE
+        st.subheader("🎯 Comprehensive Trading Strategy Guide")
+        
+        with st.expander("📚 **How to Use This Analysis for Live Trading**", expanded=False):
+            st.markdown("""
+            ### 🚀 **Live Market Trading Strategy**
+            
+            #### **1. Signal Strength Hierarchy**
+            - **🚀 STRONG BUY/SELL**: Highest confidence, immediate action required
+            - **📈📉 BUY/SELL**: Medium confidence, wait for confirmation
+            - **🔄 ACCUMULATE**: Smart money accumulation, longer-term setup
+            - **💰 TAKE PROFIT**: Profit booking signal, consider exiting
+            - **⏳ WAIT**: No clear signal, monitor for setup
+            
+            #### **2. Real-Time Decision Making**
+            - **Monitor every 3 minutes** during market hours
+            - **Look for signal changes** from WAIT to actionable signals
+            - **Use confidence scores** to gauge signal reliability
+            - **Combine with price action** for entry confirmation
+            
+            #### **3. Entry Strategy**
+            - **Strong Signals**: Enter immediately with tight stop loss
+            - **Moderate Signals**: Wait for pullback/rally confirmation
+            - **Accumulation**: Scale in gradually on dips
+            - **Volume Confirmation**: Always wait for volume spike
+            
+            #### **4. Risk Management**
+            - **Stop Loss**: Set at recent support/resistance levels
+            - **Position Size**: 1-2% risk per trade
+            - **Exit Strategy**: Book profits at 2-3% moves
+            - **Trailing Stop**: Move stop loss to breakeven after 1% move
+            """)
+        
+        with st.expander("📊 **Advanced Pattern Recognition**", expanded=False):
+            st.markdown("""
+            ### 🔍 **Pattern Recognition for Better Entries**
+            
+            #### **Bullish Patterns**
+            1. **Price ↑ + OI ↑ + High Volume**: Strong accumulation
+            2. **Price ↓ + OI ↑ + High Volume**: Smart money buying dips
+            3. **Low Volume + Price ↑**: Weak move, wait for volume
+            
+            #### **Bearish Patterns**
+            1. **Price ↓ + OI ↓ + High Volume**: Strong distribution
+            2. **Price ↑ + OI ↓ + High Volume**: Profit taking
+            3. **Low Volume + Price ↓**: Weak move, wait for volume
+            
+            #### **Reversal Patterns**
+            1. **Extreme Volume + Price Reversal**: Potential trend change
+            2. **OI Divergence**: Price and OI moving opposite
+            3. **Volume Drying Up**: Trend losing momentum
+            """)
+        
+        with st.expander("⏰ **Timing Your Trades**", expanded=False):
+            st.markdown("""
+            ### ⏰ **Optimal Trading Timing**
+            
+            #### **Market Hours Strategy**
+            - **9:15-10:00 AM**: High volatility, wait for clear signals
+            - **10:00-11:30 AM**: Best time for trend following trades
+            - **11:30-2:00 PM**: Lower volatility, focus on scalping
+            - **2:00-3:30 PM**: High volatility, momentum trades
+            
+            #### **Signal Confirmation Timeframes**
+            - **Strong Signals**: 5-10 minutes confirmation
+            - **Moderate Signals**: 15-30 minutes confirmation
+            - **Accumulation**: 1-2 hours for full position
+            - **Exit Signals**: Immediate action required
+            
+            #### **Volume Analysis Timing**
+            - **Abnormal Volume**: Look for 2-3 consecutive periods
+            - **OI Changes**: Monitor for sustained direction
+            - **Price Action**: Confirm with candlestick patterns
+            """)
+        
+        with st.expander("🛡️ **Risk Management & Psychology**", expanded=False):
+            st.markdown("""
+            ### 🛡️ **Risk Management Framework**
+            
+            #### **Position Sizing**
+            - **Conservative**: 0.5-1% risk per trade
+            - **Moderate**: 1-2% risk per trade
+            - **Aggressive**: 2-3% risk per trade (not recommended)
+            
+            #### **Stop Loss Strategy**
+            - **Tight Stop**: 0.5-1% for strong signals
+            - **Normal Stop**: 1-2% for moderate signals
+            - **Wide Stop**: 2-3% for accumulation trades
+            
+            #### **Profit Taking**
+            - **Partial Exit**: 50% at 1% profit
+            - **Full Exit**: Remaining at 2-3% profit
+            - **Trailing Stop**: Move to breakeven after 0.5% profit
+            
+            #### **Psychological Rules**
+            - **Never chase losses** with bigger positions
+            - **Stick to your plan** regardless of emotions
+            - **Take breaks** after 3 consecutive losses
+            - **Review trades** daily for improvement
+            """)
+        
     else:
         st.warning("No data found for selected filters.")
         st.info("Please check your selection and try again.")
@@ -584,5 +860,6 @@ st.markdown("""
 <div style="text-align: center; color: #666; padding: 1rem;">
     <p>📊 Options Analysis Pro | Advanced OI & Volume Analysis</p>
     <p>⚠️ This is for educational purposes only. Not financial advice.</p>
+    <p>🎯 Use signals responsibly and always manage your risk!</p>
 </div>
 """, unsafe_allow_html=True)
