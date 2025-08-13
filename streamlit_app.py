@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -154,10 +155,10 @@ def plot_close_with_signals(df: pd.DataFrame, min_abs_delta_price: float, min_ab
 
 # --------------- Streamlit App ---------------
 st.set_page_config(page_title="OI Signal Dashboard", layout="wide")
-st.title("Intraday OI Signal Dashboard — LB / SB / LU / SC")
+st.title("Intraday OI Signal Dashboard - LB / SB / LU / SC")
 st.caption(
     "Upload a CSV with columns: timestamp, open, high, low, close, volume, oi. "
-    "Use the sliders to filter signals by minimum |ΔPrice| and |ΔOI|."
+    "Use the sliders to filter signals by minimum |Delta Price| and |Delta OI|."
 )
 
 uploaded = st.file_uploader("Upload CSV file", type=["csv"])  # single page
@@ -190,7 +191,7 @@ oi_slider_step = 1
 col_th1, col_th2 = st.columns(2)
 with col_th1:
     min_abs_delta_price = st.slider(
-        "Minimum |ΔPrice|",
+        "Minimum |Delta Price|",
         min_value=0.0,
         max_value=float(price_slider_max),
         value=0.0,
@@ -199,7 +200,7 @@ with col_th1:
     )
 with col_th2:
     min_abs_delta_oi = st.slider(
-        "Minimum |ΔOI|",
+        "Minimum |Delta OI|",
         min_value=0,
         max_value=int(oi_slider_max),
         value=0,
