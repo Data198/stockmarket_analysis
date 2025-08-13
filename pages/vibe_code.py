@@ -2,7 +2,8 @@
 diff --git a/streamlit_app.py b/streamlit_app.py
 --- a/streamlit_app.py
 +++ b/streamlit_app.py
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,240 @@
++# -*- coding: utf-8 -*-
 +from typing import Dict, List, Tuple
 +
 +import matplotlib.pyplot as plt
@@ -159,10 +160,10 @@ diff --git a/streamlit_app.py b/streamlit_app.py
 +
 +# --------------- Streamlit App ---------------
 +st.set_page_config(page_title="OI Signal Dashboard", layout="wide")
-+st.title("Intraday OI Signal Dashboard — LB / SB / LU / SC")
++st.title("Intraday OI Signal Dashboard - LB / SB / LU / SC")
 +st.caption(
 +    "Upload a CSV with columns: timestamp, open, high, low, close, volume, oi. "
-+    "Use the sliders to filter signals by minimum |ΔPrice| and |ΔOI|."
++    "Use the sliders to filter signals by minimum |Delta Price| and |Delta OI|."
 +)
 +
 +uploaded = st.file_uploader("Upload CSV file", type=["csv"])  # single page
@@ -195,7 +196,7 @@ diff --git a/streamlit_app.py b/streamlit_app.py
 +col_th1, col_th2 = st.columns(2)
 +with col_th1:
 +    min_abs_delta_price = st.slider(
-+        "Minimum |ΔPrice|",
++        "Minimum |Delta Price|",
 +        min_value=0.0,
 +        max_value=float(price_slider_max),
 +        value=0.0,
@@ -204,7 +205,7 @@ diff --git a/streamlit_app.py b/streamlit_app.py
 +    )
 +with col_th2:
 +    min_abs_delta_oi = st.slider(
-+        "Minimum |ΔOI|",
++        "Minimum |Delta OI|",
 +        min_value=0,
 +        max_value=int(oi_slider_max),
 +        value=0,
