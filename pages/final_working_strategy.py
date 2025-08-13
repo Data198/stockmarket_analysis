@@ -139,7 +139,7 @@ def load_option_data(trade_date, symbol, expiry_date, strike_price, option_type)
 
     try:
         sql = """
-            SELECT timestamp, close, open_interest, volume, high, low, open
+            SELECT timestamp, close, open_interest, volume
             FROM option_3min_ohlc
             WHERE trade_date = :trade_date
               AND symbol = :symbol
@@ -263,8 +263,8 @@ def calculate_advanced_metrics(df):
     # Price metrics
     metrics['Total_Price_Change'] = df['close'].iloc[-1] - df['close'].iloc[0]
     metrics['Total_Price_Change_Pct'] = ((df['close'].iloc[-1] / df['close'].iloc[0]) - 1) * 100
-    metrics['Max_Price'] = df['high'].max()
-    metrics['Min_Price'] = df['low'].min()
+    metrics['Max_Price'] = df['close'].max()
+    metrics['Min_Price'] = df['close'].min()
     metrics['Price_Volatility'] = df['close'].pct_change().std() * np.sqrt(252 * 24 * 20) * 100
     
     # Volume metrics
